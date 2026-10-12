@@ -297,10 +297,17 @@ class PersonnelRegexParser:
                 else:
                     item_clean = item
 
-                # 괄호 내 한자나 부가정보 제거: 예: 김희준(金熙俊) -> 김희준
-                item_clean = re.sub(r"\([가-힣\w\s·]+\)", "", item_clean).strip()
+                # 괄호 패턴 사전 분석 (예: 정치부장(홍길동) 또는 홍길동(정치부장))
+                parenthesis_match1 = re.search(r"([가-힣]+)\(([가-힣]{2,4})\)", item_clean)
+                parenthesis_match2 = re.search(r"([가-힣]{2,4})\(([가-힣]+)\)", item_clean)
+                if parenthesis_match1 and cls.clean_name(parenthesis_match1.group(2)):
+                    item_clean = f"{parenthesis_match1.group(1)} {parenthesis_match1.group(2)}"
+                elif parenthesis_match2 and cls.clean_name(parenthesis_match2.group(1)):
+                    item_clean = f"{parenthesis_match2.group(2)} {parenthesis_match2.group(1)}"
+                else:
+                    item_clean = re.sub(r"\([가-힣\w\s·]+\)", "", item_clean).strip()
 
-                # 서브 아이템 파싱 (쉼표로 나열된 경우: 예: 건설부동산부 부장 김희준, 차장 박영수)
+                # 서브 아이템 파싱 (쉼표, 슬래시, 세미콜론 등으로 나열된 경우)
                 sub_records = cls._parse_single_bullet(
                     item_clean, current_media, current_action, current_section_rank, found_email
                 )
@@ -320,15 +327,16 @@ class PersonnelRegexParser:
         email: str
     ) -> List[Dict[str, Any]]:
         """
-        단일 불릿 텍스트(예: '건설부동산부장 김희준' 또는 '사회부 차장 박철수, 부장 최영희') 파싱.
+        단일 발령 텍스트 파싱. 이름의 위치(앞, 뒤, 중간)와 다양한 형태를 유연하게 지원.
         """
         records: List[Dict[str, Any]] = []
 
-        # 콤마로 여러 명이 나열된 경우 분할
-        parts = [p.strip() for p in text.split(",") if p.strip()]
+        # 쉼표, 슬래시, 세미콜론, 가운데점으로 분할
+        parts = re.split(r"[,/;\·|]", text)
         last_dept = ""
 
         for part in parts:
+            part = part.strip()
             tokens = part.split()
             if not tokens:
                 continue
@@ -337,51 +345,61 @@ class PersonnelRegexParser:
             extracted_rank = section_rank or "기자"
             extracted_dept = last_dept or "본사"
 
-            # 케이스 A: 3개 이상 토큰 (예: "건설부동산부 부장 김희준" or "논설위원실 논설위원 이재명")
-            if len(tokens) >= 3:
-                cand_name = cls.clean_name(tokens[-1])
-                if cand_name:
-                    extracted_name = cand_name
-                    extracted_dept = tokens[0]
-                    extracted_rank = " ".join(tokens[1:-1])
-                    last_dept = extracted_dept
+            # 1. 토큰 중 유효한 한글 인명(2~4자) 찾기
+            name_idx = -1
+            for idx in [len(tokens)-1, 0, 1] if len(tokens) >= 2 else [0]:
+                if 0 <= idx < len(tokens):
+                    cand = cls.clean_name(tokens[idx])
+                    if cand:
+                        name_idx = idx
+                        extracted_name = cand
+                        break
 
-            # 케이스 B: 2개 토큰 (예: "건설부동산부장 김희준" or "차장 박철수" or "정치부 홍길동")
-            elif len(tokens) == 2:
-                cand_name = cls.clean_name(tokens[1])
-                first_token = tokens[0]
-
-                if cand_name:
-                    extracted_name = cand_name
-                    # first_token 안에 부서와 직급이 결합된 경우 파싱 (예: "건설부동산부장")
-                    rank_match = re.search(f"({RANK_REGEX_PATTERN})$", first_token)
+            # 2. 이름 위치에 따라 부서와 직급 추정
+            if extracted_name and name_idx != -1:
+                other_tokens = [tokens[i] for i in range(len(tokens)) if i != name_idx]
+                if not other_tokens:
+                    # 이름만 있는 경우
+                    extracted_rank = section_rank or "기자"
+                elif len(other_tokens) == 1:
+                    first = other_tokens[0]
+                    rank_match = re.search(f"({RANK_REGEX_PATTERN})$", first)
                     if rank_match:
                         extracted_rank = rank_match.group(1)
-                        extracted_dept = first_token[:rank_match.start()].strip() or "본사"
-                    elif first_token in RANK_HIERARCHY:
-                        extracted_rank = first_token
+                        extracted_dept = first[:rank_match.start()].strip() or last_dept or "본사"
+                    elif first in RANK_HIERARCHY:
+                        extracted_rank = first
                         extracted_dept = last_dept or "본사"
                     else:
-                        extracted_dept = first_token
+                        extracted_dept = first
                         extracted_rank = section_rank or "기자"
                     last_dept = extracted_dept
+                else:
+                    # 2개 이상 토큰이 남은 경우 (예: "건설부동산부" "부장")
+                    extracted_dept = other_tokens[0]
+                    extracted_rank = " ".join(other_tokens[1:])
+                    last_dept = extracted_dept
 
-            # 케이스 C: 1개 토큰 (예: "건설부동산부장김희준" 처럼 붙어있는 경우)
+            # 3. 토큰이 1개로 붙어있는 경우 (예: "건설부동산부장김희준" or "홍길동정치부장")
             elif len(tokens) == 1:
                 single_str = tokens[0]
-                rank_match = re.search(f"({RANK_REGEX_PATTERN})([가-힣]{{2,4}})$", single_str)
-                if rank_match:
-                    r_text = rank_match.group(1)
-                    n_text = rank_match.group(2)
-                    cand_name = cls.clean_name(n_text)
-                    if cand_name:
-                        extracted_name = cand_name
-                        extracted_rank = r_text
-                        extracted_dept = single_str[:rank_match.start()].strip() or last_dept or "본사"
-                        last_dept = extracted_dept
+                # 직급+이름 형태
+                match1 = re.search(f"({RANK_REGEX_PATTERN})([가-힣]{{2,4}})$", single_str)
+                # 이름+직급 형태
+                match2 = re.search(f"^([가-힣]{{2,4}})({RANK_REGEX_PATTERN})", single_str)
+
+                if match1 and cls.clean_name(match1.group(2)):
+                    extracted_name = match1.group(2)
+                    extracted_rank = match1.group(1)
+                    extracted_dept = single_str[:match1.start()].strip() or last_dept or "본사"
+                    last_dept = extracted_dept
+                elif match2 and cls.clean_name(match2.group(1)):
+                    extracted_name = match2.group(1)
+                    extracted_rank = match2.group(2)
+                    extracted_dept = single_str[match2.end():].strip() or last_dept or "본사"
+                    last_dept = extracted_dept
 
             if extracted_name:
-                # 불필요한 수식어구 정리
                 clean_dept = re.sub(r"^[△▲◇◆■◎\s]+", "", extracted_dept).strip()
                 clean_rank = re.sub(r"^[△▲◇◆■◎\s]+", "", extracted_rank).strip()
                 if not clean_rank:

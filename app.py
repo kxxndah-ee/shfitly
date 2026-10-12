@@ -18,6 +18,7 @@ import streamlit as st
 from data_pipeline import (
     MediaDatabase,
     PersonnelTrackerEngine,
+    PersonnelRegexParser,
     NaverNewsEmailFinder,
     load_and_process_bigkinds_file,
     normalize_media_name,
@@ -316,12 +317,17 @@ with tab_search:
 
     all_reporters = db.get_all_reporters()
 
+    if not all_reporters:
+        st.info("💡 현재 데이터베이스에 등록된 언론인 기록이 없습니다. **[⚙️ 데이터 관리 및 수집]** 탭에서 빅카인즈 엑셀을 업로드하거나 기사 텍스트를 붙여넣어주세요.")
+
     selected_reporter_id = None
 
     if search_mode == "이름으로 검색 (동명이인 구분)":
         col_s1, col_s2 = st.columns([1, 2])
         with col_s1:
             name_query = st.text_input("기자 이름 입력", placeholder="예: 김희준, 이영희, 박철수").strip()
+            if all_reporters:
+                st.caption(f"등록된 언론인: 총 {len(all_reporters)}명")
 
         if name_query:
             matched_reporters = [r for r in all_reporters if name_query in r["name"]]
@@ -329,7 +335,10 @@ with tab_search:
             matched_reporters = all_reporters
 
         if not matched_reporters:
-            st.warning(f"'{name_query}' 검색 결과가 없습니다.")
+            if name_query:
+                st.warning(f"'{name_query}' 기자를 찾을 수 없습니다. (현재 등록된 {len(all_reporters)}명 중 일치 항목 없음)")
+                with st.expander("👀 현재 등록된 전체 기자 명단 확인하기"):
+                    st.write(", ".join([r["name"] for r in all_reporters]) if all_reporters else "없음")
         else:
             # 동명이인이 존재할 경우 상세 표시명(출신 언론사 및 이메일) 드롭다운 제공
             options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
@@ -623,6 +632,45 @@ with tab_data:
                 st.error("샘플 데이터 파일을 찾을 수 없습니다.")
 
     with dcol2:
+        st.markdown("#### 📋 기사 텍스트 직접 붙여넣기 (가장 확실함 ✨)")
+        st.write("200자 제한 없이, 인터넷 기사의 인사 발령 텍스트를 그대로 복사해 붙여넣으면 즉시 파싱하여 등록합니다.")
+
+        with st.expander("📝 텍스트 직접 입력창 열기", expanded=True):
+            pcol1, pcol2 = st.columns(2)
+            with pcol1:
+                paste_media = st.text_input("언론사명", placeholder="예: 뉴스1, 조선일보")
+            with pcol2:
+                paste_date = st.date_input("발령 일자", value=datetime.date.today())
+            
+            paste_title = st.text_input("기사 제목", placeholder="예: [인사] 뉴스1")
+            paste_text = st.text_area(
+                "발령 기사 본문 붙여넣기",
+                height=140,
+                placeholder="예:\n◆ 뉴스1\n◇승진\n△건설부동산부장 김희준\n△정치부 차장 박철수"
+            )
+
+            if st.button("🚀 붙여넣은 본문 즉시 분석 및 DB 등록", use_container_width=True):
+                if not paste_text.strip():
+                    st.warning("발령 기사 본문을 입력해주세요.")
+                else:
+                    parsed_records = PersonnelRegexParser.parse_article_text(
+                        article_text=paste_text,
+                        default_media=paste_media or "미상",
+                        article_title=paste_title or "",
+                        pub_date=str(paste_date)
+                    )
+                    if not parsed_records:
+                        st.error("⚠️ 입력된 텍스트에서 [부서명] [직책] [이름] 형태의 발령 대상을 추출하지 못했습니다. 형식을 확인해주세요.")
+                    else:
+                        engine = PersonnelTrackerEngine()
+                        res = engine.process_records(parsed_records, append=True)
+                        st.session_state["upload_banner"] = (
+                            f"🎉 직접 입력한 기사에서 {len(parsed_records)}명의 발령 기록을 성공적으로 등록했습니다! "
+                            f"(총 누적 언론인 {res['unique_reporters']}명)"
+                        )
+                        st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("#### 🌐 네이버 뉴스 검색 API 연동 (바이라인 이메일 동기화)")
         st.write("기자의 이름과 언론사명을 검색해 본문 바이라인에서 이메일을 추출하고 고유 식별자를 보완합니다.")
 
