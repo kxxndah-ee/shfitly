@@ -136,7 +136,7 @@ st.markdown("""
     .badge-jobchange {
         background-color: #EDEBFE;
         color: #5521B5;
-        border: 1px solid #D61F69;
+        border: 1px solid #A78BFA;
     }
     .badge-normal {
         background-color: #F1F5F9;
@@ -221,6 +221,75 @@ st.markdown("""
         .profile-name { font-size: 1.3rem; }
         .timeline-container { padding-left: 24px; }
         .timeline-dot { left: -31px; width: 14px; height: 14px; }
+    }
+
+    /* ===================================================
+       버튼 스타일: 모든 빨간색 기본 스타일을 차분한 그레이(Slate/Gray) 톤으로 재정의
+       =================================================== */
+    button,
+    .stButton > button,
+    button[kind="primary"],
+    button[data-testid="baseButton-primary"],
+    div.stButton > button:first-child[kind="primary"],
+    .stFormSubmitButton > button {
+        background-color: #475569 !important;
+        color: #FFFFFF !important;
+        border: 1px solid #334155 !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        transition: all 0.15s ease !important;
+    }
+
+    button:hover,
+    .stButton > button:hover,
+    button[kind="primary"]:hover,
+    button[data-testid="baseButton-primary"]:hover,
+    div.stButton > button:first-child[kind="primary"]:hover,
+    .stFormSubmitButton > button:hover {
+        background-color: #334155 !important;
+        border-color: #1E293B !important;
+        color: #FFFFFF !important;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+    }
+
+    button:active,
+    button:focus,
+    button[kind="primary"]:active,
+    button[kind="primary"]:focus,
+    .stButton > button:active,
+    .stButton > button:focus {
+        background-color: #1E293B !important;
+        border-color: #0F172A !important;
+        color: #FFFFFF !important;
+        box-shadow: none !important;
+    }
+
+    /* 보조 버튼 스타일 (연회색 모노톤) */
+    button[kind="secondary"],
+    button[data-testid="baseButton-secondary"],
+    .stButton > button[kind="secondary"] {
+        background-color: #F1F5F9 !important;
+        color: #334155 !important;
+        border: 1px solid #CBD5E1 !important;
+        border-radius: 8px !important;
+        font-weight: 500 !important;
+    }
+
+    button[kind="secondary"]:hover,
+    button[data-testid="baseButton-secondary"]:hover,
+    .stButton > button[kind="secondary"]:hover {
+        background-color: #E2E8F0 !important;
+        color: #0F172A !important;
+        border-color: #94A3B8 !important;
+    }
+
+    /* 검색 폼 내부 입력창 및 버튼 높이 완벽 정렬 */
+    div[data-testid="stForm"] {
+        border: none !important;
+        padding: 0 !important;
+    }
+    div[data-testid="stForm"] div[data-testid="stTextInput"] {
+        margin-bottom: 0 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -311,87 +380,91 @@ tab_search, tab_jobchanges, tab_analytics, tab_data = st.tabs([
 # TAB 1: 🔍 통합 스마트 검색
 # =========================================================================
 with tab_search:
-    st.markdown("### 🔍 언론인 검색 및 경력 타임라인")
-
-    all_reporters = db.get_all_reporters()
-
-    # 상단 빠른 온라인 기사 수집 & 안내 바
-    col_info, col_quick_btn = st.columns([3, 1])
-    with col_info:
-        st.info("🌐 **온라인 기사 기반 실시간 추적**: 기자 이름을 입력하고 검색하면 온라인 기사(다음/네이버) 전문을 크롤링하여 소속 언론사, 부서, 이메일, 발령 이력을 실시간으로 분석합니다.")
+    col_title, col_quick_btn = st.columns([3, 1])
+    with col_title:
+        st.markdown("### 🌐 언론인 실시간 온라인 검색")
+        st.caption("기자 이름을 입력하고 [검색]을 누르면 다음·네이버 최신 온라인 기사 전문을 크롤링하여 소속 언론사, 부서, 이메일, 발령 이력을 즉시 분석합니다.")
     with col_quick_btn:
-        if st.button("⚡ 최신 발령 실시간 수집", use_container_width=True, type="secondary", help="인터넷 뉴스에서 최신 인사 발령 기사를 실시간 수집하여 등록합니다."):
+        st.write("")
+        if st.button("⚡ 최신 발령 실시간 수집", use_container_width=True, type="secondary", help="인터넷 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
             with st.spinner("온라인 포털에서 최신 인사 기사 전문을 수집 및 분석 중..."):
                 res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=15)
                 st.session_state["upload_banner"] = f"🎉 {res['message']}"
                 st.rerun()
 
-    search_mode = st.radio(
-        "검색 모드 선택",
-        ["🌐 온라인 기사 실시간 검색 및 이름 검색", "🏢 매체 + 부서 / 직급 필터 검색"],
-        horizontal=True
-    )
+    # 이름 입력 칸 바로 옆에 작게 '검색' 버튼 배치 (Form 형태 지원으로 엔터 키도 즉시 검색)
+    with st.form(key="realtime_search_form", clear_on_submit=False):
+        col_in, col_btn = st.columns([6, 1])
+        with col_in:
+            search_name_input = st.text_input(
+                "기자 이름",
+                value=st.session_state.get("active_search_name", ""),
+                placeholder="기자 이름을 입력하세요 (예: 김희준, 홍길동)",
+                label_visibility="collapsed"
+            )
+        with col_btn:
+            search_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
 
+    if search_submitted:
+        name_clean = search_name_input.strip()
+        if name_clean:
+            with st.spinner(f"포털 온라인 뉴스에서 '{name_clean}' 기자의 최신 기사 및 발령문을 실시간 검색 중..."):
+                res = OnlineNewsTracker.track_reporter_online(name_clean)
+                st.session_state["upload_banner"] = res["message"]
+                st.session_state["active_search_name"] = name_clean
+                st.rerun()
+        else:
+            st.warning("검색할 기자 이름을 입력해주세요.")
+
+    all_reporters = db.get_all_reporters()
+    active_name = st.session_state.get("active_search_name", search_name_input.strip())
     selected_reporter_id = None
 
-    if search_mode == "🌐 온라인 기사 실시간 검색 및 이름 검색":
-        col_s1, col_s2 = st.columns([1, 2])
-        with col_s1:
-            name_query = st.text_input("기자 이름 입력", placeholder="예: 김희준, 이영희, 홍길동").strip()
-            if all_reporters:
-                st.caption(f"DB 등록 언론인: 총 {len(all_reporters)}명")
-
-            if name_query:
-                if st.button(f"🌐 온라인 기사에서 '{name_query}' 실시간 검색", use_container_width=True, type="primary"):
-                    with st.spinner(f"온라인 뉴스에서 '{name_query}' 기자의 기사 및 발령문을 실시간 수집 중..."):
-                        res = OnlineNewsTracker.track_reporter_online(name_query)
-                        st.session_state["upload_banner"] = res["message"]
-                        st.rerun()
-
-        if name_query:
-            matched_reporters = [r for r in all_reporters if name_query in r["name"]]
-        else:
-            matched_reporters = all_reporters
-
-        if not matched_reporters:
-            if name_query:
-                st.warning(f"현재 DB에 '{name_query}' 기자가 등록되어 있지 않습니다.")
-                if st.button(f"🚀 지금 바로 온라인 기사에서 '{name_query}' 실시간 검색하기", use_container_width=True, type="primary"):
-                    with st.spinner(f"온라인 뉴스에서 '{name_query}' 기자의 인사 발령 및 바이라인 기사를 실시간 수집 중..."):
-                        res = OnlineNewsTracker.track_reporter_online(name_query)
-                        st.session_state["upload_banner"] = res["message"]
-                        st.rerun()
-            else:
-                if not all_reporters:
-                    st.write("👉 상단 검색창에 찾고자 하는 **기자 이름**을 입력 후 **[🌐 온라인 기사에서 실시간 검색]**을 누르거나, 우측 상단 **[⚡ 최신 발령 실시간 수집]**을 클릭하세요.")
-        else:
-            # 동명이인이 존재할 경우 상세 표시명(출신 언론사 및 이메일) 드롭다운 제공
-            options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
-            with col_s2:
+    if active_name:
+        matched_reporters = [r for r in all_reporters if active_name in r["name"]]
+        if matched_reporters:
+            if len(matched_reporters) > 1:
+                options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
                 selected_label = st.selectbox(
                     f"인물 선택 (검색된 기자 {len(matched_reporters)}명)",
                     options=list(options_dict.keys()),
                     help="동명이인이 있는 경우 출신 매체, 현재 부서, 이메일 정보로 명확히 구분됩니다."
                 )
                 selected_reporter_id = options_dict[selected_label]
-
+            else:
+                selected_reporter_id = matched_reporters[0]["reporter_id"]
+        else:
+            st.info(f"온라인 기사에서 '{active_name}' 기자의 발령문 또는 최근 기사를 찾지 못했습니다. 다른 이름으로 검색해보세요.")
+    elif all_reporters:
+        options_dict = {r["display_label"]: r["reporter_id"] for r in all_reporters}
+        selected_label = st.selectbox(
+            f"등록된 언론인 목록 (총 {len(all_reporters)}명)",
+            options=list(options_dict.keys())
+        )
+        selected_reporter_id = options_dict[selected_label]
     else:
-        # 매체 + 부서 / 직급 필터 검색 모드
+        st.write("")
+        st.info("💡 상단 검색창에 기자 이름을 입력하고 **[검색]** 버튼을 누르면 실시간 온라인 기사를 크롤링하여 프로필을 즉시 생성합니다.")
+
+    # 매체 / 부서별 필터 검색 (선택형 확장)
+    with st.expander("🏢 매체 / 부서별 필터 검색 (선택사항)"):
         fcol1, fcol2, fcol3 = st.columns(3)
         with fcol1:
-            media_input = st.text_input("매체명 (예: 뉴스1, 조선일보, 한국경제)")
+            media_input = st.text_input("매체명 (예: 뉴스1, 조선일보, 한국경제)", key="f_media")
         with fcol2:
-            dept_input = st.text_input("부서명 (예: 건설부동산부, 사회부, 정치부)")
+            dept_input = st.text_input("부서명 (예: 건설부동산부, 사회부, 정치부)", key="f_dept")
         with fcol3:
-            rank_input = st.text_input("직급명 (예: 부장, 차장, 부국장)")
+            rank_input = st.text_input("직급명 (예: 부장, 차장, 부국장)", key="f_rank")
 
-        filtered = db.search_reporters(media=media_input, dept=dept_input, rank=rank_input)
-        if not filtered:
-            st.info("조건에 부합하는 언론인 기록이 없습니다.")
-        else:
-            opt_dict = {f"{r['display_label']} [최종확인: {r['last_seen']}]": r["reporter_id"] for r in filtered}
-            sel_l = st.selectbox(f"검색 결과 ({len(filtered)}명)", list(opt_dict.keys()))
-            selected_reporter_id = opt_dict[sel_l]
+        if media_input or dept_input or rank_input:
+            filtered = db.search_reporters(media=media_input, dept=dept_input, rank=rank_input)
+            if filtered:
+                opt_dict = {f"{r['display_label']} [최종확인: {r['last_seen']}]": r["reporter_id"] for r in filtered}
+                sel_l = st.selectbox(f"필터 검색 결과 ({len(filtered)}명)", list(opt_dict.keys()), key="f_select")
+                if sel_l:
+                    selected_reporter_id = opt_dict[sel_l]
+            else:
+                st.info("조건에 부합하는 언론인 기록이 없습니다.")
 
     # 선택된 기자의 상세 프로필 및 타임라인 렌더링
     if selected_reporter_id:
@@ -555,7 +628,7 @@ with tab_jobchanges:
                     </div>
                 </div>
                 <div style="font-size: 1.05rem; font-weight: 700; color: #1E293B; margin: 8px 0;">
-                    <span style="color: #DC2626;">{row['from_media']} {row['from_dept']}</span> ({row['from_rank']})
+                    <span style="color: #64748B;">{row['from_media']} {row['from_dept']}</span> ({row['from_rank']})
                     &nbsp;➔&nbsp;
                     <span style="color: #2563EB;">{row['to_media']} {row['to_dept']}</span> ({row['to_rank']})
                 </div>
