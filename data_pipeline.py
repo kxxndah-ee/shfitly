@@ -12,6 +12,7 @@ data_pipeline.py
 """
 
 import os
+import io
 import re
 import sqlite3
 import datetime
@@ -417,13 +418,38 @@ class PersonnelTrackerEngine:
     def __init__(self, db_path: str = "media_tracker.db"):
         self.db = MediaDatabase(db_path)
 
-    def process_records(self, raw_records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def process_records(self, raw_records: List[Dict[str, Any]], append: bool = True) -> Dict[str, Any]:
         """
         추출된 모든 레코드를 시계열 순서로 정렬한 후,
         1순위 이메일 매칭 및 2순위 알고리즘 휴리스틱을 적용하여 클러스터링을 수행합니다.
+        append=True인 경우 기존 DB의 레코드들과 병합(Merge)하여 누적 처리합니다.
         """
-        if not raw_records:
-            return {"total_records": 0, "unique_reporters": 0, "job_changes_detected": 0}
+        if append:
+            existing_records = self.db.get_all_raw_records()
+            seen_keys = set()
+            combined_records = []
+            
+            for r in existing_records:
+                key = (str(r.get("pub_date", "")), str(r.get("media", "")), str(r.get("name", "")), str(r.get("dept", "")), str(r.get("rank_title", "")))
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    combined_records.append(dict(r))
+
+            new_added_count = 0
+            for r in raw_records:
+                key = (str(r.get("pub_date", "")), str(r.get("media", "")), str(r.get("name", "")), str(r.get("dept", "")), str(r.get("rank_title", "")))
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    combined_records.append(r)
+                    new_added_count += 1
+            
+            effective_records = combined_records
+        else:
+            effective_records = list(raw_records)
+            new_added_count = len(raw_records)
+
+        if not effective_records:
+            return {"total_records": 0, "new_records": 0, "unique_reporters": 0, "job_changes_detected": 0}
 
         # 날짜순 정렬 (과거 -> 현재)
         def parse_date_key(r):
@@ -432,7 +458,7 @@ class PersonnelTrackerEngine:
                 return d_str[:8]
             return "19700101"
 
-        sorted_records = sorted(raw_records, key=parse_date_key)
+        sorted_records = sorted(effective_records, key=parse_date_key)
 
         # 동명이인 클러스터 컨테이너: Dict[name, List[ReporterCluster]]
         clusters_by_name: Dict[str, List[Dict[str, Any]]] = {}
@@ -466,6 +492,7 @@ class PersonnelTrackerEngine:
         total_unique = sum(len(c_list) for c_list in clusters_by_name.values())
         return {
             "total_records": len(sorted_records),
+            "new_records": new_added_count,
             "unique_reporters": total_unique,
             "job_changes_detected": len(detected_job_changes)
         }
@@ -915,6 +942,13 @@ class MediaDatabase:
 
             conn.commit()
 
+    def get_all_raw_records(self) -> List[Dict[str, Any]]:
+        """DB에 저장된 기존 모든 발령 레코드를 가져옵니다."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM personnel_records ORDER BY pub_date ASC, id ASC")
+            return [dict(row) for row in cursor.fetchall()]
+
     def get_all_reporters(self) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -986,55 +1020,109 @@ class MediaDatabase:
 # 6. 빅카인즈 파일 로더 및 일괄 처리 인터페이스
 # ==========================================
 
-def load_and_process_bigkinds_file(file_path_or_buffer) -> Dict[str, Any]:
+def _fetch_full_text_from_url(url: str) -> Optional[str]:
+    """기사 URL에서 원문 본문을 자동 추출하여 200자 제한을 보완합니다."""
+    if not url or not str(url).startswith("http"):
+        return None
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = requests.get(str(url).strip(), headers=headers, timeout=4)
+        if resp.status_code == 200:
+            html = resp.text
+            clean = re.sub(r"<(script|style|header|footer|nav).*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
+            clean = re.sub(r"<[^>]+>", " ", clean)
+            clean = re.sub(r"&[a-z]+;", " ", clean)
+            clean = re.sub(r"\s+", " ", clean).strip()
+            if any(k in clean for k in ["승진", "전보", "부장", "차장", "국장", "논설위원"]):
+                return clean[:10000]
+    except Exception:
+        pass
+    return None
+
+
+def load_and_process_bigkinds_file(file_path_or_buffer, append: bool = True) -> Dict[str, Any]:
     """
     빅카인즈 다운로드 표준 엑셀/CSV 파일을 읽고,
-    인사 발령 텍스트를 파싱하여 데이터베이스에 저장합니다.
+    인사 발령 텍스트를 파싱하여 데이터베이스에 저장(또는 누적)합니다.
     """
+    df = None
+
+    # 1. 파일 읽기
     if isinstance(file_path_or_buffer, str):
         if file_path_or_buffer.endswith(".csv"):
             df = pd.read_csv(file_path_or_buffer, encoding="utf-8-sig")
         else:
-            df = pd.read_excel(file_path_or_buffer)
+            try:
+                df = pd.read_excel(file_path_or_buffer)
+            except Exception:
+                df = pd.read_excel(file_path_or_buffer, engine="openpyxl")
     else:
-        # Streamlit UploadedFile 객체인 경우
+        content_bytes = file_path_or_buffer.read()
+        file_path_or_buffer.seek(0)
         try:
-            df = pd.read_excel(file_path_or_buffer)
+            df = pd.read_excel(io.BytesIO(content_bytes))
         except Exception:
-            file_path_or_buffer.seek(0)
-            df = pd.read_csv(file_path_or_buffer, encoding="utf-8-sig")
+            try:
+                df = pd.read_csv(io.BytesIO(content_bytes), encoding="utf-8-sig")
+            except Exception:
+                df = pd.read_csv(io.BytesIO(content_bytes), encoding="cp949")
 
-    # 빅카인즈 컬럼명 호환 처리
+    if df is None or df.empty:
+        raise ValueError("업로드된 파일이 비어있거나 읽을 수 없는 형식입니다.")
+
+    # 2. 헤더 행 자동 탐색 (상단 메타데이터 행이 있는 경우)
+    keywords = ["일자", "언론사", "본문", "기사원문", "제목"]
+    has_valid_header = any(any(kw in str(c) for kw in keywords) for c in df.columns)
+
+    if not has_valid_header:
+        for row_idx in range(min(10, len(df))):
+            row_vals = [str(v) for v in df.iloc[row_idx].values]
+            match_count = sum(1 for kw in keywords if any(kw in v for v in row_vals))
+            if match_count >= 2:
+                df.columns = df.iloc[row_idx].values
+                df = df.iloc[row_idx + 1:].reset_index(drop=True)
+                break
+
+    # 3. 빅카인즈 컬럼명 유연한 매핑
     col_map = {}
     for col in df.columns:
         c_clean = str(col).strip()
-        if "일자" in c_clean:
+        if any(k in c_clean for k in ["일자", "날짜", "date", "등록일"]):
             col_map[col] = "일자"
-        elif "언론사" in c_clean:
+        elif any(k in c_clean for k in ["언론사", "매체", "출처", "media", "언론사명"]):
             col_map[col] = "언론사"
-        elif "제목" in c_clean:
+        elif any(k in c_clean for k in ["제목", "기사제목", "title", "헤드라인"]):
             col_map[col] = "제목"
-        elif "본문" in c_clean or "기사원문" in c_clean:
+        elif any(k in c_clean for k in ["본문", "기사원문", "내용", "본문(200자)", "기사본문", "요약"]):
             col_map[col] = "본문"
-        elif "기고자" in c_clean:
-            col_map[col] = "기고자"
+        elif any(k in c_clean for k in ["URL", "url", "링크", "link", "기사링크"]):
+            col_map[col] = "URL"
 
     df = df.rename(columns=col_map)
     required = ["일자", "언론사", "본문"]
     for req in required:
         if req not in df.columns:
-            raise ValueError(f"빅카인즈 필수 컬럼 '{req}'이 누락되었습니다. (현재 컬럼: {list(df.columns)})")
+            raise ValueError(f"빅카인즈 필수 컬럼 '{req}'을 찾을 수 없습니다. (현재 인식된 컬럼: {list(df.columns)})")
 
+    # 4. 행별 인사 발령 레코드 추출
     all_extracted_records = []
     for _, row in df.iterrows():
         pub_date = str(row["일자"]).strip()
-        # YYYYMMDD 포맷 변환
         if len(pub_date) == 8 and pub_date.isdigit():
             pub_date = f"{pub_date[:4]}-{pub_date[4:6]}-{pub_date[6:]}"
 
         media = str(row["언론사"]).strip()
         title = str(row.get("제목", "")).strip()
         body = str(row["본문"]).strip()
+        url = str(row.get("URL", "")).strip()
+
+        # 200자 제한 보완: 본문이 짧고 URL이 있는 경우 원문 스크랩 시도
+        if len(body) < 250 and url.startswith("http"):
+            full_body = _fetch_full_text_from_url(url)
+            if full_body and len(full_body) > len(body):
+                body = full_body
 
         records = PersonnelRegexParser.parse_article_text(
             article_text=body,
@@ -1044,6 +1132,9 @@ def load_and_process_bigkinds_file(file_path_or_buffer) -> Dict[str, Any]:
         )
         all_extracted_records.extend(records)
 
+    if not all_extracted_records:
+        raise ValueError("파일 내 기사 본문에서 [부서명] [직책] [이름] 형태의 인사 발령 텍스트를 찾지 못했습니다. 기사 본문에 발령 내용이 포함되어 있는지 확인해주세요.")
+
     engine = PersonnelTrackerEngine()
-    result = engine.process_records(all_extracted_records)
+    result = engine.process_records(all_extracted_records, append=append)
     return result

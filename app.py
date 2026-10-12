@@ -243,13 +243,17 @@ def get_secret(key: str, default: str = "") -> str:
 DB_FILE = "media_tracker.db"
 db = MediaDatabase(DB_FILE)
 
-# 초기 실행 시 DB가 비어있고 샘플 데이터가 존재하면 자동 1회 로드
+# 초기 실행 시 DB가 완전히 처음이고 샘플이 필요할 때만 1회 로드 (사용자 업로드 보호)
 stats = db.get_stats()
-if stats["reporters"] == 0:
+if stats["reporters"] == 0 and "auto_sample_done" not in st.session_state:
     sample_file = "sample_data/bigkinds_personnel_sample.xlsx"
     if os.path.exists(sample_file):
-        load_and_process_bigkinds_file(sample_file)
-        stats = db.get_stats()
+        try:
+            load_and_process_bigkinds_file(sample_file, append=False)
+            stats = db.get_stats()
+        except Exception:
+            pass
+    st.session_state["auto_sample_done"] = True
 
 
 # ==========================================
@@ -286,6 +290,9 @@ st.markdown("""
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+if "upload_banner" in st.session_state and st.session_state["upload_banner"]:
+    st.success(st.session_state["upload_banner"])
 
 tab_search, tab_jobchanges, tab_analytics, tab_data = st.tabs([
     "🔍 통합 스마트 검색",
@@ -569,36 +576,47 @@ with tab_data:
     with dcol1:
         st.markdown("#### 📂 빅카인즈 파일 업로드")
         st.write("빅카인즈에서 다운로드한 엑셀(`.xlsx`) 또는 CSV(`.csv`) 파일을 업로드하세요.")
+        
+        upload_mode = st.radio(
+            "반영 방식 선택",
+            ["기존 데이터에 누적하여 추가 (권장)", "기존 데이터 비우고 새로 교체"],
+            horizontal=True,
+            help="기존에 업로드한 기자 명단에 새 파일의 발령 명단을 덧붙여 누적할지, 아니면 초기화하고 교체할지 선택합니다."
+        )
+
         uploaded_file = st.file_uploader(
             "빅카인즈 파일 선택",
             type=["xlsx", "xls", "csv"],
-            help="일자, 언론사, 제목, 본문 컬럼이 포함되어 있어야 합니다."
+            help="일자, 언론사, 제목, 본문(또는 기사원문) 컬럼이 포함되어 있어야 합니다."
         )
 
         if uploaded_file is not None:
             if st.button("🚀 업로드 파일 처리 및 DB 반영", use_container_width=True):
-                with st.spinner("빅카인즈 기사 본문 정규식 고속 파싱 및 동명이인 클러스터링 중..."):
+                with st.spinner("빅카인즈 기사 본문 정규식 고속 파싱, 동명이인 클러스터링 및 누적 처리 중..."):
                     try:
-                        res = load_and_process_bigkinds_file(uploaded_file)
-                        st.success(
-                            f"데이터 반영 완료! (추출 레코드: {res['total_records']}건, "
-                            f"고유 언론인: {res['unique_reporters']}명, "
-                            f"탐지된 이직: {res['job_changes_detected']}건)"
+                        is_append = (upload_mode == "기존 데이터에 누적하여 추가 (권장)")
+                        res = load_and_process_bigkinds_file(uploaded_file, append=is_append)
+                        new_cnt = res.get('new_records', res['total_records'])
+                        st.session_state["upload_banner"] = (
+                            f"🎉 '{uploaded_file.name}' 반영 완료! "
+                            f"(신규 발령 {new_cnt}건 추가 반영, 현재 총 언론인 {res['unique_reporters']}명, "
+                            f"총 발령 {res['total_records']}건, 탐지된 이직 {res['job_changes_detected']}건)"
                         )
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"파일 처리 중 오류가 발생했습니다: {e}")
+                        st.error(f"⚠️ 파일 처리 중 오류가 발생했습니다: {e}")
+                        st.info("💡 엑셀 파일 안에 '일자', '언론사', '본문(기사원문)' 컬럼과 [부서명] [직책] [이름] 형태의 발령 내용이 들어있는지 확인해주세요.")
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("#### 🧪 기본 샘플 데이터 로드")
-        st.write("테스트용 빅카인즈 표준 샘플 데이터(뉴스1 김희준 이직 및 중앙일보 동명이인 시나리오 포함)를 즉시 로드합니다.")
+        st.write("테스트용 빅카인즈 표준 샘플 데이터(뉴스1 김희준 이직 및 중앙일보 동명이인 시나리오 포함)를 로드합니다.")
         if st.button("📥 샘플 데이터 즉시 로드/초기화", use_container_width=True):
             sample_path = "sample_data/bigkinds_personnel_sample.xlsx"
             if os.path.exists(sample_path):
                 with st.spinner("샘플 데이터 파싱 및 파이프라인 실행 중..."):
-                    res = load_and_process_bigkinds_file(sample_path)
-                    st.success(f"샘플 데이터 로드 완료! (추출 레코드 {res['total_records']}건, 이직 {res['job_changes_detected']}건)")
+                    res = load_and_process_bigkinds_file(sample_path, append=False)
+                    st.session_state["upload_banner"] = f"🧪 샘플 데이터(30명)로 초기화되었습니다. (총 레코드 {res['total_records']}건)"
                     time.sleep(1)
                     st.rerun()
             else:
