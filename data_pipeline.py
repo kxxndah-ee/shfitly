@@ -17,8 +17,13 @@ import re
 import sqlite3
 import datetime
 from typing import List, Dict, Tuple, Optional, Any
+from urllib.parse import quote
 import pandas as pd
 import requests
+import urllib3
+from bs4 import BeautifulSoup
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # ==========================================
@@ -312,7 +317,7 @@ class PersonnelRegexParser:
                     item_clean, current_media, current_action, current_section_rank, found_email
                 )
                 for rec in sub_records:
-                    rec["pub_date"] = pub_date
+                    rec["pub_date"] = pub_date or str(datetime.date.today())
                     results.append(rec)
 
         return results
@@ -783,6 +788,266 @@ class NaverNewsEmailFinder:
 
 
 # ==========================================
+# 4-2. 실시간 온라인 뉴스 크롤러 및 발령 트래커
+# ==========================================
+
+class OnlineNewsTracker:
+    """
+    네이버/다음/구글 뉴스 온라인 기사를 실시간 수집 및 스크래핑하여,
+    인사 발령 기사 및 기자 바이라인을 자동 분석하고 DB에 즉시 등록하는 온라인 트래커.
+    """
+
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    @classmethod
+    def search_online_articles(cls, query: str, max_items: int = 15) -> List[Dict[str, Any]]:
+        """다음 및 네이버 뉴스 검색을 통해 실시간 기사 목록을 수집합니다."""
+        encoded_query = quote(query)
+        articles = []
+        seen_urls = set()
+
+        # 1. 다음 뉴스 검색 (전문 스크래핑이 가장 안정적임)
+        try:
+            daum_url = f"https://search.daum.net/search?w=news&q={encoded_query}&sort=recency"
+            resp = requests.get(daum_url, headers=cls.HEADERS, timeout=6, verify=False)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for a in soup.find_all("a"):
+                    href = a.get("href", "")
+                    if "v.daum.net/v/" in href and href not in seen_urls:
+                        seen_urls.add(href)
+                        title = a.get_text(strip=True)
+                        if len(title) >= 5:
+                            articles.append({
+                                "title": title,
+                                "url": href,
+                                "media": "온라인뉴스",
+                                "date_text": str(datetime.date.today())
+                            })
+                            if len(articles) >= max_items:
+                                break
+        except Exception as e:
+            print(f"[Daum Search Error] {e}")
+
+        # 2. 네이버 뉴스 검색
+        if len(articles) < max_items:
+            try:
+                naver_url = f"https://search.naver.com/search.naver?where=news&query={encoded_query}&sm=tab_opt&sort=1"
+                resp = requests.get(naver_url, headers=cls.HEADERS, timeout=6, verify=False)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    for a in soup.find_all("a"):
+                        href = a.get("href", "")
+                        if ("n.news.naver.com/mnews/article" in href or "news.naver.com" in href) and href not in seen_urls:
+                            seen_urls.add(href)
+                            title = a.get_text(strip=True)
+                            if len(title) >= 5:
+                                articles.append({
+                                    "title": title,
+                                    "url": href,
+                                    "media": "온라인뉴스",
+                                    "date_text": str(datetime.date.today())
+                                })
+                                if len(articles) >= max_items:
+                                    break
+            except Exception as e:
+                print(f"[Naver Search Error] {e}")
+
+        return articles
+
+    @classmethod
+    def fetch_full_text(cls, url: str) -> Dict[str, Any]:
+        """기사 URL에 직접 접속하여 100% 원문 본문, 언론사명, 이메일을 추출합니다."""
+        result = {"text": "", "media": "온라인뉴스", "email": None}
+        if not url or not str(url).startswith("http"):
+            return result
+
+        try:
+            resp = requests.get(url, headers=cls.HEADERS, timeout=6, verify=False)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+
+                # 언론사명 파악
+                press_meta = (
+                    soup.select_one("meta[property='og:article:author']") or
+                    soup.select_one("meta[property='og:site_name']") or
+                    soup.select_one(".info_cp .tit_cp, .link_cp, .media_end_head_top_logo img")
+                )
+                if press_meta:
+                    if press_meta.name == "img" and press_meta.get("alt"):
+                        result["media"] = normalize_media_name(press_meta.get("alt"))
+                    elif press_meta.has_attr("content"):
+                        result["media"] = normalize_media_name(press_meta.get("content"))
+                    else:
+                        result["media"] = normalize_media_name(press_meta.get_text(strip=True))
+
+                # 본문 영역 탐색
+                content_area = (
+                    soup.select_one("section.article-view") or
+                    soup.select_one("#harmonyContainer") or
+                    soup.select_one("div.article_view") or
+                    soup.select_one("#newsct_article") or
+                    soup.select_one("#dic_area") or
+                    soup.select_one("#articleBodyContents") or
+                    soup.select_one("article") or
+                    soup.select_one("div.article_body")
+                )
+
+                if content_area:
+                    # 필요 없는 스크립트 제거
+                    for tag in content_area(["script", "style", "figure", "figcaption"]):
+                        tag.decompose()
+                    full_text = content_area.get_text(separator="\n", strip=True)
+                else:
+                    for tag in soup(["script", "style", "nav", "header", "footer", "form"]):
+                        tag.decompose()
+                    full_text = soup.get_text(separator="\n", strip=True)
+
+                result["text"] = full_text
+
+                # 이메일 추출
+                email_match = re.search(PersonnelRegexParser.EMAIL_PATTERN, full_text)
+                if email_match:
+                    result["email"] = email_match.group(0).strip()
+
+        except Exception as e:
+            print(f"[Fetch Body Error] {e}")
+
+        return result
+
+    @classmethod
+    def track_reporter_online(cls, reporter_name: str) -> Dict[str, Any]:
+        """
+        특정 기자의 온라인 인사 기사 및 바이라인 기사를 실시간 검색하여
+        소속 언론사, 직급/부서, 이메일을 파싱하고 DB에 등록합니다.
+        """
+        name = reporter_name.strip()
+        if not name:
+            return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
+
+        queries = [f'"{name}" [인사]', f'"{name}" 인사', f'"{name}" 기자']
+        all_records = []
+        searched_urls = set()
+        article_count = 0
+
+        for q in queries:
+            arts = cls.search_online_articles(q, max_items=8)
+            for art in arts:
+                u = art["url"]
+                if u in searched_urls:
+                    continue
+                searched_urls.add(u)
+                article_count += 1
+
+                fetched = cls.fetch_full_text(u)
+                body = fetched["text"]
+                if not body or len(body) < 30:
+                    continue
+
+                media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
+
+                # 1순위: 인사 발령문 파싱
+                recs = PersonnelRegexParser.parse_article_text(
+                    article_text=body,
+                    default_media=media,
+                    article_title=art["title"],
+                    pub_date=art.get("date_text", str(datetime.date.today()))
+                )
+                matched_recs = [r for r in recs if r["name"] == name]
+                if matched_recs:
+                    for mr in matched_recs:
+                        if fetched["email"] and not mr.get("email"):
+                            mr["email"] = fetched["email"]
+                    all_records.extend(matched_recs)
+                else:
+                    # 2순위: 기자 바이라인 기사 파싱 (이름이 기자로 활동 중인 경우)
+                    if (f"{name} 기자" in body or f"{name}기자" in body or 
+                        f"{name} 특파원" in body or f"{name} 논설" in body or
+                        f"{name} 기자" in art["title"] or f"{name}기자" in art["title"]):
+
+                        # 부서 추정
+                        dept = "편집국"
+                        dept_keywords = ["정치부", "사회부", "경제부", "산업부", "금융부", "IT부", "문화부", "국제부", "전국부", "디지털부"]
+                        for kw in dept_keywords:
+                            if kw in body[:500] or kw in art["title"]:
+                                dept = kw
+                                break
+
+                        domain = classify_domain(dept)
+                        all_records.append({
+                            "name": name,
+                            "media": normalize_media_name(media),
+                            "dept": dept,
+                            "domain": domain,
+                            "rank_title": "기자",
+                            "rank_level": 3,
+                            "pub_date": art.get("date_text", str(datetime.date.today())),
+                            "action_type": "보임",
+                            "source_type": "online_byline",
+                            "article_title": art["title"],
+                            "article_url": u,
+                            "email": fetched["email"] or "",
+                            "raw_text": f"온라인 기사 바이라인 확인: {art['title']}"
+                        })
+
+        if all_records:
+            engine = PersonnelTrackerEngine()
+            res = engine.process_records(all_records, append=True)
+            return {
+                "found_records": len(all_records),
+                "articles_searched": article_count,
+                "unique_reporters": res["unique_reporters"],
+                "message": f"온라인 기사 {article_count}건을 분석하여 '{name}' 기자의 활동 및 발령 기록 {len(all_records)}건을 실시간 수집·등록했습니다!"
+            }
+        else:
+            return {
+                "found_records": 0,
+                "articles_searched": article_count,
+                "message": f"온라인 기사 {article_count}건을 탐색했으나 '{name}' 기자의 발령문 또는 최근 기사를 찾지 못했습니다."
+            }
+
+    @classmethod
+    def fetch_latest_online_personnel(cls, max_articles: int = 15) -> Dict[str, Any]:
+        """최신 온라인 인사 기사 전문을 대량 수집하여 파싱 및 DB에 등록합니다."""
+        arts = cls.search_online_articles("[인사]", max_items=max_articles)
+        all_records = []
+        for art in arts:
+            fetched = cls.fetch_full_text(art["url"])
+            body = fetched["text"]
+            media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
+            if body and len(body) >= 50:
+                recs = PersonnelRegexParser.parse_article_text(
+                    article_text=body,
+                    default_media=media,
+                    article_title=art["title"],
+                    pub_date=art.get("date_text", str(datetime.date.today()))
+                )
+                for r in recs:
+                    if fetched["email"] and not r.get("email"):
+                        r["email"] = fetched["email"]
+                all_records.extend(recs)
+
+        if all_records:
+            engine = PersonnelTrackerEngine()
+            res = engine.process_records(all_records, append=True)
+            return {
+                "articles_count": len(arts),
+                "records_extracted": len(all_records),
+                "unique_reporters": res["unique_reporters"],
+                "job_changes": res["job_changes_detected"],
+                "message": f"최신 온라인 기사 {len(arts)}건에서 {len(all_records)}건의 발령 기록(총 언론인 {res['unique_reporters']}명)을 실시간 수집 및 등록 완료했습니다!"
+            }
+        else:
+            return {
+                "articles_count": len(arts),
+                "records_extracted": 0,
+                "message": "온라인 기사를 가져왔으나 발령 명단을 추출하지 못했습니다."
+            }
+
+
+# ==========================================
 # 5. SQLite 데이터베이스 및 영속화 레이어
 # ==========================================
 
@@ -880,6 +1145,16 @@ class MediaDatabase:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_records_media ON personnel_records(media)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_reporters_name ON reporters(name)")
 
+            conn.commit()
+
+    def clear_all_data(self):
+        """데이터베이스의 모든 인사 발령 및 기자 데이터를 완전히 삭제합니다."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM personnel_records")
+            cursor.execute("DELETE FROM reporters")
+            cursor.execute("DELETE FROM job_changes")
+            cursor.execute("DELETE FROM articles")
             conn.commit()
 
     def save_records_and_clusters(

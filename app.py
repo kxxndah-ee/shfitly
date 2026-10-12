@@ -19,6 +19,7 @@ from data_pipeline import (
     MediaDatabase,
     PersonnelTrackerEngine,
     PersonnelRegexParser,
+    OnlineNewsTracker,
     NaverNewsEmailFinder,
     load_and_process_bigkinds_file,
     normalize_media_name,
@@ -244,17 +245,7 @@ def get_secret(key: str, default: str = "") -> str:
 DB_FILE = "media_tracker.db"
 db = MediaDatabase(DB_FILE)
 
-# 초기 실행 시 DB가 완전히 처음이고 샘플이 필요할 때만 1회 로드 (사용자 업로드 보호)
 stats = db.get_stats()
-if stats["reporters"] == 0 and "auto_sample_done" not in st.session_state:
-    sample_file = "sample_data/bigkinds_personnel_sample.xlsx"
-    if os.path.exists(sample_file):
-        try:
-            load_and_process_bigkinds_file(sample_file, append=False)
-            stats = db.get_stats()
-        except Exception:
-            pass
-    st.session_state["auto_sample_done"] = True
 
 
 # ==========================================
@@ -277,6 +268,19 @@ with st.sidebar:
     st.write(f"• 인사 발령 기록: **{stats['records']:,}건**")
     st.write(f"• 탐지된 이직: **{stats['changes']:,}건**")
     st.write(f"• 수집 언론사: **{stats['media_count']:,}개사**")
+
+    st.markdown("---")
+    st.markdown("**⚡ 빠른 온라인 실행**")
+    if st.button("🌐 최신 발령 온라인 실시간 수집", use_container_width=True, help="네이버 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
+        with st.spinner("온라인 뉴스에서 최신 인사 발령 기사 전문을 수집 및 분석 중..."):
+            res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=15)
+            st.session_state["upload_banner"] = f"🎉 {res['message']}"
+            st.rerun()
+
+    if st.button("🗑️ 전체 데이터 비우기/삭제", use_container_width=True, type="secondary"):
+        db.clear_all_data()
+        st.session_state["upload_banner"] = "🗑️ 데이터베이스의 모든 발령 및 기자 데이터가 깨끗하게 삭제되었습니다."
+        st.rerun()
 
 
 # ==========================================
@@ -309,25 +313,40 @@ tab_search, tab_jobchanges, tab_analytics, tab_data = st.tabs([
 with tab_search:
     st.markdown("### 🔍 언론인 검색 및 경력 타임라인")
 
+    all_reporters = db.get_all_reporters()
+
+    # 상단 빠른 온라인 기사 수집 & 안내 바
+    col_info, col_quick_btn = st.columns([3, 1])
+    with col_info:
+        st.info("🌐 **온라인 기사 기반 실시간 추적**: 기자 이름을 입력하고 검색하면 온라인 기사(다음/네이버) 전문을 크롤링하여 소속 언론사, 부서, 이메일, 발령 이력을 실시간으로 분석합니다.")
+    with col_quick_btn:
+        if st.button("⚡ 최신 발령 실시간 수집", use_container_width=True, type="secondary", help="인터넷 뉴스에서 최신 인사 발령 기사를 실시간 수집하여 등록합니다."):
+            with st.spinner("온라인 포털에서 최신 인사 기사 전문을 수집 및 분석 중..."):
+                res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=15)
+                st.session_state["upload_banner"] = f"🎉 {res['message']}"
+                st.rerun()
+
     search_mode = st.radio(
         "검색 모드 선택",
-        ["이름으로 검색 (동명이인 구분)", "매체 + 부서 / 직급 필터 검색"],
+        ["🌐 온라인 기사 실시간 검색 및 이름 검색", "🏢 매체 + 부서 / 직급 필터 검색"],
         horizontal=True
     )
 
-    all_reporters = db.get_all_reporters()
-
-    if not all_reporters:
-        st.info("💡 현재 데이터베이스에 등록된 언론인 기록이 없습니다. **[⚙️ 데이터 관리 및 수집]** 탭에서 빅카인즈 엑셀을 업로드하거나 기사 텍스트를 붙여넣어주세요.")
-
     selected_reporter_id = None
 
-    if search_mode == "이름으로 검색 (동명이인 구분)":
+    if search_mode == "🌐 온라인 기사 실시간 검색 및 이름 검색":
         col_s1, col_s2 = st.columns([1, 2])
         with col_s1:
-            name_query = st.text_input("기자 이름 입력", placeholder="예: 김희준, 이영희, 박철수").strip()
+            name_query = st.text_input("기자 이름 입력", placeholder="예: 김희준, 이영희, 홍길동").strip()
             if all_reporters:
-                st.caption(f"등록된 언론인: 총 {len(all_reporters)}명")
+                st.caption(f"DB 등록 언론인: 총 {len(all_reporters)}명")
+
+            if name_query:
+                if st.button(f"🌐 온라인 기사에서 '{name_query}' 실시간 검색", use_container_width=True, type="primary"):
+                    with st.spinner(f"온라인 뉴스에서 '{name_query}' 기자의 기사 및 발령문을 실시간 수집 중..."):
+                        res = OnlineNewsTracker.track_reporter_online(name_query)
+                        st.session_state["upload_banner"] = res["message"]
+                        st.rerun()
 
         if name_query:
             matched_reporters = [r for r in all_reporters if name_query in r["name"]]
@@ -336,9 +355,15 @@ with tab_search:
 
         if not matched_reporters:
             if name_query:
-                st.warning(f"'{name_query}' 기자를 찾을 수 없습니다. (현재 등록된 {len(all_reporters)}명 중 일치 항목 없음)")
-                with st.expander("👀 현재 등록된 전체 기자 명단 확인하기"):
-                    st.write(", ".join([r["name"] for r in all_reporters]) if all_reporters else "없음")
+                st.warning(f"현재 DB에 '{name_query}' 기자가 등록되어 있지 않습니다.")
+                if st.button(f"🚀 지금 바로 온라인 기사에서 '{name_query}' 실시간 검색하기", use_container_width=True, type="primary"):
+                    with st.spinner(f"온라인 뉴스에서 '{name_query}' 기자의 인사 발령 및 바이라인 기사를 실시간 수집 중..."):
+                        res = OnlineNewsTracker.track_reporter_online(name_query)
+                        st.session_state["upload_banner"] = res["message"]
+                        st.rerun()
+            else:
+                if not all_reporters:
+                    st.write("👉 상단 검색창에 찾고자 하는 **기자 이름**을 입력 후 **[🌐 온라인 기사에서 실시간 검색]**을 누르거나, 우측 상단 **[⚡ 최신 발령 실시간 수집]**을 클릭하세요.")
         else:
             # 동명이인이 존재할 경우 상세 표시명(출신 언론사 및 이메일) 드롭다운 제공
             options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
@@ -583,6 +608,21 @@ with tab_data:
     dcol1, dcol2 = st.columns(2)
 
     with dcol1:
+        st.markdown("#### 🌐 최신 온라인 기사 실시간 수집 (가장 편리함 🚀)")
+        st.write("엑셀 다운로드 없이, 네이버 뉴스에서 최근 인사 발령 기사 전문을 실시간으로 가져와 자동 분석 및 등록합니다.")
+        col_on1, col_on2 = st.columns([2, 1])
+        with col_on1:
+            online_limit = st.slider("수집할 최신 기사 수", min_value=5, max_value=25, value=15, step=5)
+        with col_on2:
+            st.write("")
+            st.write("")
+            if st.button("🚀 온라인 최신 발령 즉시 수집", use_container_width=True, type="primary"):
+                with st.spinner(f"네이버 뉴스에서 최신 인사 발령 기사 {online_limit}건의 전문을 수집 및 분석 중..."):
+                    res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=online_limit)
+                    st.session_state["upload_banner"] = f"🎉 {res['message']}"
+                    st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("#### 📂 빅카인즈 파일 업로드")
         st.write("빅카인즈에서 다운로드한 엑셀(`.xlsx`) 또는 CSV(`.csv`) 파일을 업로드하세요.")
         
@@ -618,18 +658,23 @@ with tab_data:
                         st.info("💡 엑셀 파일 안에 '일자', '언론사', '본문(기사원문)' 컬럼과 [부서명] [직책] [이름] 형태의 발령 내용이 들어있는지 확인해주세요.")
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 🧪 기본 샘플 데이터 로드")
-        st.write("테스트용 빅카인즈 표준 샘플 데이터(뉴스1 김희준 이직 및 중앙일보 동명이인 시나리오 포함)를 로드합니다.")
-        if st.button("📥 샘플 데이터 즉시 로드/초기화", use_container_width=True):
-            sample_path = "sample_data/bigkinds_personnel_sample.xlsx"
-            if os.path.exists(sample_path):
-                with st.spinner("샘플 데이터 파싱 및 파이프라인 실행 중..."):
-                    res = load_and_process_bigkinds_file(sample_path, append=False)
-                    st.session_state["upload_banner"] = f"🧪 샘플 데이터(30명)로 초기화되었습니다. (총 레코드 {res['total_records']}건)"
-                    time.sleep(1)
-                    st.rerun()
-            else:
-                st.error("샘플 데이터 파일을 찾을 수 없습니다.")
+        st.markdown("#### 🧪 기본 샘플 로드 및 데이터 초기화")
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("📥 샘플 데이터 로드", use_container_width=True):
+                sample_path = "sample_data/bigkinds_personnel_sample.xlsx"
+                if os.path.exists(sample_path):
+                    with st.spinner("샘플 데이터 파싱 중..."):
+                        res = load_and_process_bigkinds_file(sample_path, append=False)
+                        st.session_state["upload_banner"] = f"🧪 샘플 데이터(30명)로 초기화되었습니다. (총 레코드 {res['total_records']}건)"
+                        st.rerun()
+                else:
+                    st.error("샘플 데이터 파일을 찾을 수 없습니다.")
+        with col_btn2:
+            if st.button("🗑️ 전체 데이터 완전히 비우기", use_container_width=True):
+                db.clear_all_data()
+                st.session_state["upload_banner"] = "🗑️ 모든 데이터가 삭제되었습니다. 이제 온라인 기사 검색을 시작해보세요!"
+                st.rerun()
 
     with dcol2:
         st.markdown("#### 📋 기사 텍스트 직접 붙여넣기 (가장 확실함 ✨)")
