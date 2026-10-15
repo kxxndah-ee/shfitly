@@ -23,6 +23,8 @@ from data_pipeline import (
     NaverNewsEmailFinder,
     load_and_process_bigkinds_file,
     normalize_media_name,
+    generate_career_profile_metrics,
+    generate_career_excel,
     DOMAIN_TAXONOMY,
     RANK_HIERARCHY
 )
@@ -138,9 +140,50 @@ st.markdown("""
         color: #5521B5;
         border: 1px solid #A78BFA;
     }
+    .badge-career {
+        background-color: #0F172A;
+        color: #F8FAFC;
+        border: 1px solid #334155;
+    }
     .badge-normal {
         background-color: #F1F5F9;
         color: #475569;
+    }
+
+    /* 20개년 소속 매체 로드맵 및 사다리 */
+    .roadmap-container {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        margin: 14px 0 20px 0;
+        padding: 16px 20px;
+        background: #F8FAFC;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+    }
+    .roadmap-node {
+        background: #FFFFFF;
+        border: 1px solid #CBD5E1;
+        border-radius: 10px;
+        padding: 10px 14px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+    }
+    .roadmap-media {
+        font-size: 0.95rem;
+        font-weight: 800;
+        color: #0F172A;
+    }
+    .roadmap-period {
+        font-size: 0.78rem;
+        color: #64748B;
+        font-weight: 600;
+        margin-top: 2px;
+    }
+    .roadmap-arrow {
+        color: #94A3B8;
+        font-size: 1.2rem;
+        font-weight: 800;
     }
 
     /* 타임라인 컴포넌트 */
@@ -478,16 +521,43 @@ with tab_search:
         timeline = db.get_reporter_timeline(selected_reporter_id)
 
         if reporter_obj and timeline:
-            # 프로필 카드
-            total_records = len(timeline)
-            job_change_count = sum(1 for t in timeline if "이직" in t.get("action_type", ""))
+            # 20개년 커리어 지표 및 로드맵 산출
+            metrics = generate_career_profile_metrics(timeline, reporter_obj)
+            all_jc = db.get_job_changes(limit=500)
+            rep_jc = [jc for jc in all_jc if jc.get("reporter_id") == selected_reporter_id or jc.get("name") == reporter_obj["name"]]
+
+            # 엑셀 및 CSV 바이트 버퍼 생성
+            excel_bytes = generate_career_excel(reporter_obj, timeline, rep_jc)
+            df_timeline = pd.DataFrame(timeline)
+            csv_bytes = df_timeline.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+
+            # 1. 상단 프로필 헤더 및 엑셀 다운로드 액션 바
+            col_phead, col_pdl1, col_pdl2 = st.columns([3, 1.2, 1.2])
+            with col_phead:
+                st.markdown(f"### 📋 {reporter_obj['name']} 기자의 20개년 커리어 종합 프로필")
+            with col_pdl1:
+                st.download_button(
+                    "📥 20개년 프로필 엑셀 (.xlsx)",
+                    data=excel_bytes,
+                    file_name=f"{reporter_obj['name']}_20개년_커리어_프로필.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            with col_pdl2:
+                st.download_button(
+                    "📄 발령 연대기 (.csv)",
+                    data=csv_bytes,
+                    file_name=f"{reporter_obj['name']}_발령연대기.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
             current_media = reporter_obj["current_media"]
             current_dept = reporter_obj["current_dept"]
             current_rank = reporter_obj["current_rank"]
             email = reporter_obj.get("email", "")
-            first_date = reporter_obj["first_seen"]
-            last_date = reporter_obj["last_seen"]
 
+            # 2. Executive Dossier Summary Card
             st.markdown(f"""
             <div class="profile-card">
                 <div class="profile-name">
@@ -495,17 +565,109 @@ with tab_search:
                     <span class="badge badge-transfer">{current_media}</span>
                     <span class="badge badge-normal">{current_dept}</span>
                     <span class="badge badge-promotion">{current_rank}</span>
-                    {'<span class="badge badge-jobchange">이직 이력 있음</span>' if job_change_count > 0 else ''}
+                    <span class="badge badge-career">총 {metrics.get('career_years', 1)}년차 ({metrics.get('first_year', 2020)}년 ~ {metrics.get('last_year', 2026)}년)</span>
+                    {'<span class="badge badge-jobchange">이직 ' + str(metrics.get('job_change_count', 0)) + '회</span>' if metrics.get('job_change_count', 0) > 0 else ''}
                 </div>
                 <div class="profile-meta">
                     • <b>고유 식별자(ID):</b> <code>{reporter_obj['reporter_id']}</code><br>
                     • <b>바이라인 이메일:</b> {f'<a href="mailto:{email}">{email}</a>' if email else '<span style="color:#94A3B8;">미등록 (네이버 API 동기화 가능)</span>'}<br>
-                    • <b>활동 추적 기간:</b> {first_date} ~ {last_date} (총 {total_records}건 발령 / 매체 간 이직 {job_change_count}회)
+                    • <b>활동 추적 기간:</b> {metrics.get('first_date')} ~ {metrics.get('last_date')} (총 {metrics.get('total_records', len(timeline))}건 발령/활동 수집, 승진 {metrics.get('promotion_count', 0)}회, 이직 {metrics.get('job_change_count', 0)}회)<br>
+                    • <b>주요 출입처 전문분야:</b> <b style="color:#0F172A;">{metrics.get('primary_domain', '일반')}</b>
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
-            st.markdown("#### ⏳ 커리어 이동 타임라인 (Chronological Timeline)")
+            # 3. 4대 핵심 커리어 KPI 지표 카드
+            kcol1, kcol2, kcol3, kcol4 = st.columns(4)
+            with kcol1:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">총 경력 연차</div>
+                    <div class="metric-value">{metrics.get('career_years', 1)}년차</div>
+                    <div class="metric-sub">{metrics.get('first_year', 2020)}년 ~ {metrics.get('last_year', 2026)}년</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with kcol2:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">현재 소속 / 직급</div>
+                    <div class="metric-value" style="font-size:1.4rem;">{current_media}</div>
+                    <div class="metric-sub" style="color:#475569;">{current_dept} {current_rank}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with kcol3:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">주요 출입처 전문분야</div>
+                    <div class="metric-value" style="font-size:1.4rem;">{metrics.get('primary_domain', '일반')}</div>
+                    <div class="metric-sub">발령 및 활동 기사 기반</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with kcol4:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">매체 간 이직 횟수</div>
+                    <div class="metric-value">{metrics.get('job_change_count', 0)}회</div>
+                    <div class="metric-sub">총 {len(metrics.get('affiliation_journey', []))}개 언론사 활동</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # 4. 소속 매체 20개년 이동 로드맵 (Affiliation Journey)
+            aff_list = metrics.get("affiliation_journey", [])
+            if aff_list:
+                st.markdown("#### 🏛️ 20개년 소속 매체 이동 로드맵 (Affiliation Journey)")
+                roadmap_html = '<div class="roadmap-container">'
+                for idx, aff in enumerate(aff_list):
+                    roadmap_html += f"""
+                    <div class="roadmap-node">
+                        <div class="roadmap-media">{aff['media']}</div>
+                        <div class="roadmap-period">{aff['start_year']}년 ~ {aff['end_year']}년 ({aff['last_dept']} {aff['last_rank']})</div>
+                    </div>
+                    """
+                    if idx < len(aff_list) - 1:
+                        roadmap_html += '<div class="roadmap-arrow">➔</div>'
+                roadmap_html += '</div>'
+                st.markdown(roadmap_html, unsafe_allow_html=True)
+
+            # 5. 직급 성장 사다리 (Progression Ladder) & 출입처 도메인 분석
+            l_col, d_col = st.columns([1.2, 1])
+            with l_col:
+                st.markdown("#### 🪜 직급 성장 사다리 (Career Ladder)")
+                l_items = metrics.get("promotion_ladder", [])
+                if l_items:
+                    ladder_html = '<div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:8px;">'
+                    for idx, l in enumerate(l_items):
+                        ladder_html += f"""
+                        <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:6px 12px; font-size:0.85rem;">
+                            <b>{l['rank_title']}</b> <span style="color:#64748B;">({l['year']}년·{l['media']})</span>
+                        </div>
+                        """
+                        if idx < len(l_items) - 1:
+                            ladder_html += '<span style="color:#94A3B8; font-weight:700;">➔</span>'
+                    ladder_html += '</div>'
+                    st.markdown(ladder_html, unsafe_allow_html=True)
+                else:
+                    st.write("단일 직급 활동 기록이 확인되었습니다.")
+
+            with d_col:
+                st.markdown("#### 📂 출입처 도메인 전문성 (Domain)")
+                d_breakdown = metrics.get("domain_breakdown", [])
+                if d_breakdown:
+                    d_html = '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">'
+                    for db_item in d_breakdown[:4]:
+                        d_html += f"""
+                        <span class="badge badge-normal" style="padding:6px 10px; font-size:0.8rem;">
+                            <b>{db_item['domain']}</b> {db_item['percentage']}% ({db_item['count']}건)
+                        </span>
+                        """
+                    d_html += '</div>'
+                    st.markdown(d_html, unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # 6. 20개년 커리어 연대기 타임라인
+            st.markdown("#### ⏳ 20개년 커리어 연대기 타임라인 (Chronological Timeline)")
+            st.caption("기사 원문 링크를 클릭하면 해당 시점의 실제 뉴스 기사 웹페이지로 바로 이동합니다.")
 
             # 타임라인 카드 렌더링
             timeline_html = '<div class="timeline-container">'
@@ -523,6 +685,16 @@ with tab_search:
                 else:
                     badge_html = f'<span class="badge badge-normal">{action}</span>'
 
+                art_url = item.get("article_url", "")
+                art_title = item.get("article_title", "")
+                if art_url:
+                    link_html = f'<div style="margin-top:6px;"><a href="{art_url}" target="_blank" style="font-size:0.85rem; font-weight:600; color:#2563EB; text-decoration:underline;">📰 기사 원문: {art_title or "온라인 기사 보기"} 🔗</a></div>'
+                elif art_title:
+                    link_html = f'<div style="margin-top:6px; font-size:0.85rem; color:#475569;">📰 기사 제목: <b>{art_title}</b></div>'
+                else:
+                    link_html = ''
+
+                raw_snippet = item.get('raw_text', '')
                 timeline_html += f"""
                 <div class="timeline-item">
                     <div class="{dot_class}"></div>
@@ -535,14 +707,26 @@ with tab_search:
                             {badge_html}
                             <span style="font-size:0.85rem; color:#64748B; margin-left:8px;">출입처 도메인: {item.get('domain', '일반')}</span>
                         </div>
+                        {link_html}
                         <div class="timeline-body">
-                            <b>발령 원문:</b> <code>{item.get('raw_text', '')}</code>
+                            <b>발령 원문:</b> <code>{raw_snippet}</code>
                         </div>
                     </div>
                 </div>
                 """
             timeline_html += '</div>'
             st.markdown(timeline_html, unsafe_allow_html=True)
+
+            # 7. 하단 엑셀 다운로드 재제공
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.download_button(
+                "📥 20개년 커리어 프로필 엑셀 다운로드 (.xlsx)",
+                data=excel_bytes,
+                file_name=f"{reporter_obj['name']}_20개년_커리어_프로필.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="btn_dl_bottom"
+            )
 
 
 # =========================================================================
@@ -827,14 +1011,32 @@ with tab_data:
                     st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 💾 데이터 내보내기")
+        st.markdown("#### 💾 전체 데이터 내보내기 (엑셀 & CSV)")
         with db.get_connection() as conn:
             export_df = pd.read_sql_query("SELECT * FROM reporters", conn)
-            csv_bytes = export_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-            st.download_button(
-                "📥 등록 기자 명단 CSV 다운로드",
-                data=csv_bytes,
-                file_name="media_reporters_master.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+            rec_df = pd.read_sql_query("SELECT * FROM personnel_records", conn)
+            jc_df = pd.read_sql_query("SELECT * FROM job_changes", conn)
+
+            col_ex1, col_ex2 = st.columns(2)
+            with col_ex1:
+                xl_buf = io.BytesIO()
+                with pd.ExcelWriter(xl_buf, engine="openpyxl") as writer:
+                    export_df.to_excel(writer, sheet_name="기자_마스터", index=False)
+                    rec_df.to_excel(writer, sheet_name="발령_레코드", index=False)
+                    jc_df.to_excel(writer, sheet_name="이직_기록", index=False)
+                st.download_button(
+                    "📥 전체 데이터 엑셀 다운로드 (.xlsx)",
+                    data=xl_buf.getvalue(),
+                    file_name="media_personnel_master.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            with col_ex2:
+                csv_bytes = export_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                st.download_button(
+                    "📥 등록 기자 명단 CSV 다운로드 (.csv)",
+                    data=csv_bytes,
+                    file_name="media_reporters_master.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )

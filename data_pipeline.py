@@ -242,7 +242,8 @@ class PersonnelRegexParser:
         article_text: str,
         default_media: str = "",
         article_title: str = "",
-        pub_date: str = ""
+        pub_date: str = "",
+        article_url: str = ""
     ) -> List[Dict[str, Any]]:
         """
         기사 본문 전체를 순회하며 인사 발령 레코드 리스트를 추출합니다.
@@ -318,6 +319,8 @@ class PersonnelRegexParser:
                 )
                 for rec in sub_records:
                     rec["pub_date"] = pub_date or str(datetime.date.today())
+                    rec["article_title"] = article_title or ""
+                    rec["article_url"] = article_url or ""
                     results.append(rec)
 
         return results
@@ -795,6 +798,7 @@ class OnlineNewsTracker:
     """
     네이버/다음/구글 뉴스 온라인 기사를 실시간 수집 및 스크래핑하여,
     인사 발령 기사 및 기자 바이라인을 자동 분석하고 DB에 즉시 등록하는 온라인 트래커.
+    최근 20개년(2005~2026)의 포털 기사를 실시간 탐색하여 연대기 커리어 프로필을 구축합니다.
     """
 
     HEADERS = {
@@ -802,55 +806,122 @@ class OnlineNewsTracker:
     }
 
     @classmethod
+    def extract_pub_date(cls, url: str, soup: BeautifulSoup, raw_text: str = "") -> Optional[str]:
+        """기사 URL 또는 본문/HTML 메타데이터에서 실제 기사 발행 일자(YYYY-MM-DD)를 정밀 추출합니다."""
+        # 1. 다음 뉴스 URL 패턴 (예: v.daum.net/v/20160324143000999)
+        daum_match = re.search(r"v\.daum\.net/v/(\d{4})(\d{2})(\d{2})", url)
+        if daum_match:
+            return f"{daum_match.group(1)}-{daum_match.group(2)}-{daum_match.group(3)}"
+
+        # 2. 네이버 뉴스 메타데이터 및 속성 (._ARTICLE_DATE_TIME)
+        naver_date = soup.select_one("._ARTICLE_DATE_TIME, .media_end_head_info_datestamp_time")
+        if naver_date:
+            dt_val = naver_date.get("data-date-time", "")
+            if dt_val and len(dt_val) >= 10:
+                return dt_val[:10]
+            t_text = naver_date.get_text(strip=True)
+            m = re.search(r"(20\d{2})[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", t_text)
+            if m:
+                return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+        # 3. 표준 오픈그래프 및 발행일 메타 태그
+        for meta_name in ["article:published_time", "og:regDate", "pubdate", "sailthru.date", "date"]:
+            meta = soup.select_one(f"meta[property='{meta_name}'], meta[name='{meta_name}']")
+            if meta and meta.get("content"):
+                c = meta["content"]
+                m = re.search(r"(20\d{2})[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", c)
+                if m:
+                    return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+        # 4. 언론사 공통 날짜 표시 태그 (.txt_info, .num_date, .info_view, .date)
+        for tag in soup.select(".txt_info, .num_date, .info_view, .date, .byline_date, .article_info"):
+            text = tag.get_text(strip=True)
+            m = re.search(r"(200[5-9]|201[0-9]|202[0-6])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", text)
+            if m:
+                return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+        # 5. 본문 시작부 1,200자 내의 정규식 탐색
+        if raw_text:
+            m = re.search(r"(200[5-9]|201[0-9]|202[0-6])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", raw_text[:1200])
+            if m:
+                return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+        # 6. 일반 URL 경로 내의 날짜 (/2018/05/23/ 등)
+        url_m = re.search(r"/(200[5-9]|201[0-9]|202[0-6])/?(\d{2})/?(\d{2})", url)
+        if url_m:
+            return f"{url_m.group(1)}-{url_m.group(2)}-{url_m.group(3)}"
+
+        return None
+
+    @classmethod
     def search_online_articles(
         cls, 
         query: str, 
-        max_items: int = 15,
+        max_items: int = 25,
         client_id: str = "",
-        client_secret: str = ""
+        client_secret: str = "",
+        start_year: int = 2005,
+        end_year: int = 2026
     ) -> List[Dict[str, Any]]:
         """
-        포털(다음·네이버·구글 뉴스 RSS) 및 네이버 공식 검색 API를 통해 실시간 기사 목록을 수집합니다.
-        네이버 API 키가 없어도 웹 크롤러가 100% 정상 작동합니다.
+        포털(다음·네이버·구글 뉴스 RSS) 및 네이버 공식 검색 API를 통해 20개년(2005~2026) 기사 목록을 수집합니다.
+        네이버 API 키가 없어도 20개년 웹 검색 엔진이 100% 정상 작동합니다.
         """
         encoded_query = quote(query)
         articles = []
         seen_urls = set()
 
-        # 0. 네이버 공식 검색 API (API 키가 제공된 경우 최우선 활용)
+        # 0. 네이버 공식 검색 API (API 키가 유효하게 제공된 경우)
         if client_id and client_secret:
-            try:
-                api_url = "https://openapi.naver.com/v1/search/news.json"
-                api_headers = {
-                    "X-Naver-Client-Id": client_id,
-                    "X-Naver-Client-Secret": client_secret,
-                    **cls.HEADERS
-                }
-                api_params = {"query": query, "display": min(max_items, 30), "sort": "date"}
-                api_resp = requests.get(api_url, headers=api_headers, params=api_params, timeout=5)
-                if api_resp.status_code == 200:
-                    api_data = api_resp.json()
-                    for it in api_data.get("items", []):
-                        raw_tit = re.sub(r"<[^>]+>", "", it.get("title", "")).strip()
-                        raw_tit = raw_tit.replace("&quot;", '"').replace("&amp;", '&').replace("&lt;", '<').replace("&gt;", '>')
-                        target_url = it.get("link", "") or it.get("originallink", "")
-                        if target_url and target_url not in seen_urls:
-                            seen_urls.add(target_url)
-                            articles.append({
-                                "title": raw_tit,
-                                "url": target_url,
-                                "media": "온라인뉴스",
-                                "date_text": it.get("pubDate", str(datetime.date.today()))
-                            })
-                            if len(articles) >= max_items:
-                                break
-            except Exception as e:
-                print(f"[Naver API Search Error] {e}")
+            for s_opt in ["sim", "date"]:
+                if len(articles) >= max_items:
+                    break
+                try:
+                    api_url = "https://openapi.naver.com/v1/search/news.json"
+                    api_headers = {
+                        "X-Naver-Client-Id": client_id,
+                        "X-Naver-Client-Secret": client_secret,
+                        **cls.HEADERS
+                    }
+                    api_params = {"query": query, "display": min(max_items, 30), "sort": s_opt}
+                    api_resp = requests.get(api_url, headers=api_headers, params=api_params, timeout=5)
+                    if api_resp.status_code == 200:
+                        api_data = api_resp.json()
+                        for it in api_data.get("items", []):
+                            raw_tit = re.sub(r"<[^>]+>", "", it.get("title", "")).strip()
+                            raw_tit = raw_tit.replace("&quot;", '"').replace("&amp;", '&').replace("&lt;", '<').replace("&gt;", '>')
+                            target_url = it.get("link", "") or it.get("originallink", "")
+                            if target_url and target_url not in seen_urls:
+                                seen_urls.add(target_url)
+                                # pubDate 파싱
+                                pub_d = it.get("pubDate", "")
+                                date_str = ""
+                                if pub_d:
+                                    dm = re.search(r"(\d{4})", pub_d)
+                                    if dm:
+                                        try:
+                                            import email.utils
+                                            dt = email.utils.parsedate_to_datetime(pub_d)
+                                            date_str = dt.strftime("%Y-%m-%d")
+                                        except Exception:
+                                            pass
+                                articles.append({
+                                    "title": raw_tit,
+                                    "url": target_url,
+                                    "media": "온라인뉴스",
+                                    "date_text": date_str
+                                })
+                                if len(articles) >= max_items:
+                                    break
+                except Exception as e:
+                    print(f"[Naver API Search Error] {e}")
 
-        # 1. 다음 뉴스 검색 (전문 스크래핑이 가장 안정적임)
-        if len(articles) < max_items:
+        # 1. 다음 뉴스 검색 (20개년 관련도순 + 최신순)
+        for daum_sort in ["accuracy", "recency"]:
+            if len(articles) >= max_items:
+                break
             try:
-                daum_url = f"https://search.daum.net/search?w=news&q={encoded_query}&sort=recency"
+                daum_url = f"https://search.daum.net/search?w=news&q={encoded_query}&sort={daum_sort}&period=u&sd={start_year}0101000000&ed={end_year}1231235959"
                 resp = requests.get(daum_url, headers=cls.HEADERS, timeout=6, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, "html.parser")
@@ -860,42 +931,54 @@ class OnlineNewsTracker:
                             seen_urls.add(href)
                             title = a.get_text(strip=True)
                             if len(title) >= 5:
+                                # URL에서 즉시 날짜 추출
+                                d_match = re.search(r"v\.daum\.net/v/(\d{4})(\d{2})(\d{2})", href)
+                                d_text = f"{d_match.group(1)}-{d_match.group(2)}-{d_match.group(3)}" if d_match else ""
                                 articles.append({
                                     "title": title,
                                     "url": href,
                                     "media": "온라인뉴스",
-                                    "date_text": str(datetime.date.today())
+                                    "date_text": d_text
                                 })
                                 if len(articles) >= max_items:
                                     break
             except Exception as e:
                 print(f"[Daum Search Error] {e}")
 
-        # 2. 네이버 뉴스 웹 검색 (n.news.naver.com 기사)
-        if len(articles) < max_items:
+        # 2. 네이버 뉴스 웹 검색 (20개년 관련도순[sort=0] + 최신순[sort=1])
+        for n_sort, n_so in [("0", "so:r"), ("1", "so:dd")]:
+            if len(articles) >= max_items:
+                break
             try:
-                naver_url = f"https://search.naver.com/search.naver?where=news&query={encoded_query}&sm=tab_opt&sort=1"
+                naver_url = f"https://search.naver.com/search.naver?where=news&query={encoded_query}&sm=tab_opt&sort={n_sort}&photo=0&field=0&pd=3&ds={start_year}.01.01&de={end_year}.12.31&nso={n_so},p:from{start_year}0101to{end_year}1231"
                 resp = requests.get(naver_url, headers=cls.HEADERS, timeout=6, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, "html.parser")
-                    for a in soup.find_all("a"):
-                        href = a.get("href", "")
-                        if "n.news.naver.com/mnews/article" in href and "channelPromotion" not in href and href not in seen_urls:
+                    for a in soup.find_all("a", href=True):
+                        href = a["href"]
+                        title = a.get_text(strip=True)
+                        if len(title) < 5 or href in seen_urls:
+                            continue
+
+                        # 유효 기사 링크 판단 (네이버 뉴스 플랫폼 기사 및 언론사 원문)
+                        is_valid_news = (
+                            ("article" in href or "news" in href) and
+                            not any(k in href for k in ["help.naver.com", "channelPromotion", "search.naver.com", "policy.naver.com", "cr.naver.com", "javascript:"])
+                        )
+                        if is_valid_news:
                             seen_urls.add(href)
-                            title = a.get_text(strip=True)
-                            if len(title) >= 5:
-                                articles.append({
-                                    "title": title,
-                                    "url": href,
-                                    "media": "온라인뉴스",
-                                    "date_text": str(datetime.date.today())
-                                })
-                                if len(articles) >= max_items:
-                                    break
+                            articles.append({
+                                "title": title,
+                                "url": href,
+                                "media": "온라인뉴스",
+                                "date_text": ""
+                            })
+                            if len(articles) >= max_items:
+                                break
             except Exception as e:
                 print(f"[Naver Search Error] {e}")
 
-        # 3. 구글 뉴스 RSS (전국 주요 일간지 및 전문 매체 망라)
+        # 3. 구글 뉴스 RSS
         if len(articles) < max_items:
             try:
                 g_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
@@ -906,9 +989,19 @@ class OnlineNewsTracker:
                     for item in root.findall(".//item"):
                         tit_elem = item.find("title")
                         link_elem = item.find("link")
+                        pub_elem = item.find("pubDate")
                         if tit_elem is not None and link_elem is not None:
                             raw_title = tit_elem.text or ""
                             link = link_elem.text or ""
+                            date_str = ""
+                            if pub_elem is not None and pub_elem.text:
+                                try:
+                                    import email.utils
+                                    dt = email.utils.parsedate_to_datetime(pub_elem.text)
+                                    date_str = dt.strftime("%Y-%m-%d")
+                                except Exception:
+                                    pass
+
                             if link and link not in seen_urls:
                                 seen_urls.add(link)
                                 media = "온라인뉴스"
@@ -923,7 +1016,7 @@ class OnlineNewsTracker:
                                     "title": title,
                                     "url": link,
                                     "media": media,
-                                    "date_text": str(datetime.date.today())
+                                    "date_text": date_str
                                 })
                                 if len(articles) >= max_items:
                                     break
@@ -934,8 +1027,8 @@ class OnlineNewsTracker:
 
     @classmethod
     def fetch_full_text(cls, url: str) -> Dict[str, Any]:
-        """기사 URL에 직접 접속하여 100% 원문 본문, 언론사명, 이메일을 추출합니다."""
-        result = {"text": "", "media": "온라인뉴스", "email": None}
+        """기사 URL에 직접 접속하여 100% 원문 본문, 언론사명, 실제 발행 일자, 이메일을 추출합니다."""
+        result = {"text": "", "media": "온라인뉴스", "email": None, "pub_date": None}
         if not url or not str(url).startswith("http"):
             return result
 
@@ -982,6 +1075,9 @@ class OnlineNewsTracker:
 
                 result["text"] = full_text
 
+                # 실제 기사 발행 일자 추출 (20개년 연대기 타임라인 핵심)
+                result["pub_date"] = cls.extract_pub_date(url, soup, full_text)
+
                 # 이메일 추출
                 email_match = re.search(PersonnelRegexParser.EMAIL_PATTERN, full_text)
                 if email_match:
@@ -1000,20 +1096,28 @@ class OnlineNewsTracker:
         client_secret: str = ""
     ) -> Dict[str, Any]:
         """
-        특정 기자의 온라인 인사 기사 및 바이라인 기사를 실시간 검색하여
-        소속 언론사, 직급/부서, 이메일을 파싱하고 DB에 등록합니다.
+        특정 기자의 20개년(2005~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
+        소속 언론사, 직급/부서, 이메일, 연대기 타임라인을 파싱하고 DB에 등록합니다.
         """
         name = reporter_name.strip()
         if not name:
             return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
 
-        queries = [f'"{name}" [인사]', f'"{name}" 인사', f'"{name}" 기자']
+        # 20개년 커리어 추적을 위한 다각도 검색 쿼리 구성
+        queries = [
+            f'"{name}" [인사]',
+            f'"{name}" 인사',
+            f'"{name}" 승진 OR 전보 OR 부장 OR 차장 OR 국장',
+            f'"{name} 기자"',
+            f'"{name}" 기자',
+            f'"{name}" 특파원 OR 논설위원 OR 에디터 OR 부국장'
+        ]
         all_records = []
         searched_urls = set()
         article_count = 0
 
         for q in queries:
-            arts = cls.search_online_articles(q, max_items=8, client_id=client_id, client_secret=client_secret)
+            arts = cls.search_online_articles(q, max_items=12, client_id=client_id, client_secret=client_secret)
             for art in arts:
                 u = art["url"]
                 if u in searched_urls:
@@ -1027,13 +1131,15 @@ class OnlineNewsTracker:
                     continue
 
                 media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
+                article_pub_date = fetched.get("pub_date") or art.get("date_text") or str(datetime.date.today())
 
                 # 1순위: 인사 발령문 파싱
                 recs = PersonnelRegexParser.parse_article_text(
                     article_text=body,
                     default_media=media,
                     article_title=art["title"],
-                    pub_date=art.get("date_text", str(datetime.date.today()))
+                    pub_date=article_pub_date,
+                    article_url=u
                 )
                 matched_recs = [r for r in recs if r["name"] == name]
                 if matched_recs:
@@ -1049,7 +1155,10 @@ class OnlineNewsTracker:
 
                         # 부서 추정
                         dept = "편집국"
-                        dept_keywords = ["정치부", "사회부", "경제부", "산업부", "금융부", "IT부", "문화부", "국제부", "전국부", "디지털부"]
+                        dept_keywords = [
+                            "건설부동산부", "부동산부", "정치부", "사회부", "경제부", "산업부", "금융부", 
+                            "IT부", "문화부", "국제부", "전국부", "디지털부", "증권부", "유통부"
+                        ]
                         for kw in dept_keywords:
                             if kw in body[:500] or kw in art["title"]:
                                 dept = kw
@@ -1063,7 +1172,7 @@ class OnlineNewsTracker:
                             "domain": domain,
                             "rank_title": "기자",
                             "rank_level": 3,
-                            "pub_date": art.get("date_text", str(datetime.date.today())),
+                            "pub_date": article_pub_date,
                             "action_type": "보임",
                             "source_type": "online_byline",
                             "article_title": art["title"],
@@ -1079,13 +1188,13 @@ class OnlineNewsTracker:
                 "found_records": len(all_records),
                 "articles_searched": article_count,
                 "unique_reporters": res["unique_reporters"],
-                "message": f"온라인 기사 {article_count}건을 분석하여 '{name}' 기자의 활동 및 발령 기록 {len(all_records)}건을 실시간 수집·등록했습니다!"
+                "message": f"20개년 온라인 기사 {article_count}건을 탐색·분석하여 '{name}' 기자의 발령 및 활동 기록 {len(all_records)}건을 실시간 수집하고 커리어 프로필을 구축했습니다!"
             }
         else:
             return {
                 "found_records": 0,
                 "articles_searched": article_count,
-                "message": f"온라인 기사 {article_count}건을 탐색했으나 '{name}' 기자의 발령문 또는 최근 기사를 찾지 못했습니다."
+                "message": f"20개년 온라인 기사 {article_count}건을 탐색했으나 '{name}' 기자의 발령문 또는 최근 기사를 찾지 못했습니다."
             }
 
     @classmethod
@@ -1183,9 +1292,19 @@ class MediaDatabase:
                     action_type TEXT,
                     email TEXT,
                     raw_text TEXT,
-                    reporter_id TEXT
+                    reporter_id TEXT,
+                    article_title TEXT,
+                    article_url TEXT
                 )
             """)
+            try:
+                cursor.execute("ALTER TABLE personnel_records ADD COLUMN article_title TEXT")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE personnel_records ADD COLUMN article_url TEXT")
+            except Exception:
+                pass
 
             # 3. 인물 마스터 테이블
             cursor.execute("""
@@ -1280,8 +1399,8 @@ class MediaDatabase:
             for r in raw_records:
                 cursor.execute("""
                     INSERT INTO personnel_records
-                    (pub_date, media, dept, domain, rank_title, rank_level, name, action_type, email, raw_text, reporter_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (pub_date, media, dept, domain, rank_title, rank_level, name, action_type, email, raw_text, reporter_id, article_title, article_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     str(r.get("pub_date", "")),
                     r.get("media", ""),
@@ -1293,7 +1412,9 @@ class MediaDatabase:
                     r.get("action_type", "발령"),
                     r.get("email", ""),
                     r.get("raw_text", ""),
-                    r.get("reporter_id", "")
+                    r.get("reporter_id", ""),
+                    r.get("article_title", ""),
+                    r.get("article_url", "")
                 ))
 
             # 이직 이벤트 등록
@@ -1506,7 +1627,8 @@ def load_and_process_bigkinds_file(file_path_or_buffer, append: bool = True) -> 
             article_text=body,
             default_media=media,
             article_title=title,
-            pub_date=pub_date
+            pub_date=pub_date,
+            article_url=url
         )
         all_extracted_records.extend(records)
 
@@ -1516,3 +1638,197 @@ def load_and_process_bigkinds_file(file_path_or_buffer, append: bool = True) -> 
     engine = PersonnelTrackerEngine()
     result = engine.process_records(all_extracted_records, append=append)
     return result
+
+
+# ==========================================
+# 7. 20개년 커리어 프로필 매트릭스 및 엑셀 리포트 빌더
+# ==========================================
+
+def generate_career_profile_metrics(timeline: List[Dict[str, Any]], reporter_obj: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    20개년 시계열 발령/활동 데이터를 기반으로 종합 커리어 프로필 매트릭스를 분석합니다:
+    - 활동 기간 및 연차 산정 (Career Span)
+    - 연도별 소속 매체 이동 로드맵 (Affiliation Journey)
+    - 직급 승진 사다리 (Progression Ladder)
+    - 출입처 전문 도메인 분포 (Domain Expertise)
+    - 주요 발령 마일스톤 집계
+    """
+    if not timeline:
+        return {}
+
+    # 1. 시계열 정렬 (오름차순)
+    sorted_items = sorted(
+        timeline,
+        key=lambda x: str(x.get("pub_date", "1970-01-01"))
+    )
+
+    first_date_str = str(sorted_items[0].get("pub_date", ""))[:10]
+    last_date_str = str(sorted_items[-1].get("pub_date", ""))[:10]
+
+    try:
+        first_year = int(first_date_str[:4])
+        last_year = int(last_date_str[:4])
+        career_years = max(1, last_year - first_year + 1)
+    except Exception:
+        first_year = 2020
+        last_year = 2026
+        career_years = 1
+
+    # 2. 소속 매체 이동 로드맵 (Affiliation Journey)
+    # 연속된 동일 매체는 기간(start_year ~ end_year)으로 묶음
+    affiliation_journey = []
+    current_aff = None
+    for item in sorted_items:
+        m = item.get("media", "").strip()
+        y_str = str(item.get("pub_date", ""))[:4]
+        try:
+            y = int(y_str)
+        except Exception:
+            y = first_year
+
+        if not current_aff or current_aff["media"] != m:
+            if current_aff:
+                affiliation_journey.append(current_aff)
+            current_aff = {
+                "media": m,
+                "start_year": y,
+                "end_year": y,
+                "last_rank": item.get("rank_title", "기자"),
+                "last_dept": item.get("dept", "본사")
+            }
+        else:
+            current_aff["end_year"] = max(current_aff["end_year"], y)
+            current_aff["last_rank"] = item.get("rank_title", current_aff["last_rank"])
+            current_aff["last_dept"] = item.get("dept", current_aff["last_dept"])
+    if current_aff:
+        affiliation_journey.append(current_aff)
+
+    # 3. 직급 승진 사다리 (Progression Ladder)
+    promotion_ladder = []
+    seen_ranks = set()
+    for item in sorted_items:
+        r_title = item.get("rank_title", "").strip()
+        if not r_title:
+            continue
+        r_level = item.get("rank_level", 2)
+        y_str = str(item.get("pub_date", ""))[:4]
+        if r_title not in seen_ranks:
+            seen_ranks.add(r_title)
+            promotion_ladder.append({
+                "rank_title": r_title,
+                "rank_level": r_level,
+                "year": y_str,
+                "media": item.get("media", ""),
+                "dept": item.get("dept", "")
+            })
+    promotion_ladder = sorted(promotion_ladder, key=lambda x: (x["year"], x["rank_level"]))
+
+    # 4. 출입처 도메인 전문성 분석 (Domain Expertise Breakdown)
+    domain_counts: Dict[str, int] = {}
+    for item in sorted_items:
+        d = item.get("domain", "일반").strip()
+        domain_counts[d] = domain_counts.get(d, 0) + 1
+
+    total_cnt = len(sorted_items)
+    domain_breakdown = [
+        {"domain": d, "count": c, "percentage": round((c / total_cnt) * 100, 1)}
+        for d, c in sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+    primary_domain = domain_breakdown[0]["domain"] if domain_breakdown else "일반"
+
+    # 5. 이직 및 발령 통계
+    job_change_count = sum(1 for item in sorted_items if "이직" in item.get("action_type", ""))
+    promotion_count = sum(1 for item in sorted_items if "승진" in item.get("action_type", ""))
+
+    return {
+        "first_year": first_year,
+        "last_year": last_year,
+        "career_years": career_years,
+        "first_date": first_date_str,
+        "last_date": last_date_str,
+        "total_records": total_cnt,
+        "job_change_count": job_change_count,
+        "promotion_count": promotion_count,
+        "affiliation_journey": affiliation_journey,
+        "promotion_ladder": promotion_ladder,
+        "domain_breakdown": domain_breakdown,
+        "primary_domain": primary_domain
+    }
+
+
+def generate_career_excel(
+    reporter_obj: Dict[str, Any],
+    timeline: List[Dict[str, Any]],
+    job_changes: List[Dict[str, Any]]
+) -> bytes:
+    """
+    인물의 20개년 커리어 프로필, 연대기 타임라인, 이직 히스토리를
+    정돈된 서식의 다중 시트 Excel(.xlsx) 바이트 스트림으로 생성합니다.
+    """
+    output = io.BytesIO()
+    metrics = generate_career_profile_metrics(timeline, reporter_obj)
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        # Sheet 1: 프로필 요약
+        summary_data = [
+            {"항목": "언론인 성명", "내용": reporter_obj.get("name", "")},
+            {"항목": "현재 소속 언론사", "내용": reporter_obj.get("current_media", "")},
+            {"항목": "현재 부서", "내용": reporter_obj.get("current_dept", "")},
+            {"항목": "현재 직급", "내용": reporter_obj.get("current_rank", "")},
+            {"항목": "추적 활동 기간", "내용": f"{metrics.get('first_date', '')} ~ {metrics.get('last_date', '')}"},
+            {"항목": "총 경력 연차", "내용": f"총 {metrics.get('career_years', 1)}년차 ({metrics.get('first_year', '')}년 ~ {metrics.get('last_year', '')}년)"},
+            {"항목": "주요 출입처 전문분야", "내용": metrics.get("primary_domain", "일반")},
+            {"항목": "바이라인 이메일", "내용": reporter_obj.get("email", "") or "미등록"},
+            {"항목": "소속 매체 이동 경로", "내용": " ➔ ".join([f"{a['media']}({a['start_year']}~{a['end_year']})" for a in metrics.get("affiliation_journey", [])])},
+            {"항목": "매체 간 이직 횟수", "내용": f"{metrics.get('job_change_count', 0)}회"},
+            {"항목": "승진 발령 횟수", "내용": f"{metrics.get('promotion_count', 0)}회"},
+            {"항목": "총 수집 발령/활동 건수", "내용": f"{metrics.get('total_records', len(timeline))}건"},
+            {"항목": "고유 식별자(ID)", "내용": reporter_obj.get("reporter_id", "")},
+            {"항목": "프로필 생성일시", "내용": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        ]
+        df_summary = pd.DataFrame(summary_data)
+        df_summary.to_excel(writer, sheet_name="1_커리어_프로필_요약", index=False)
+
+        # Sheet 2: 20개년 발령 및 활동 연대기
+        timeline_rows = []
+        for t in timeline:
+            p_date = str(t.get("pub_date", ""))
+            y_str = p_date[:4] if len(p_date) >= 4 else ""
+            timeline_rows.append({
+                "발령일자": p_date,
+                "연도": y_str,
+                "언론사": t.get("media", ""),
+                "부서": t.get("dept", ""),
+                "직급": t.get("rank_title", ""),
+                "직급서열": t.get("rank_level", 2),
+                "발령구분": t.get("action_type", "발령"),
+                "출입처도메인": t.get("domain", "일반"),
+                "기사제목": t.get("article_title", ""),
+                "기사원문링크": t.get("article_url", ""),
+                "원문텍스트": t.get("raw_text", "")
+            })
+        df_timeline = pd.DataFrame(timeline_rows)
+        if not df_timeline.empty:
+            df_timeline = df_timeline.sort_values(by="발령일자", ascending=True)
+        df_timeline.to_excel(writer, sheet_name="2_20개년_발령_연대기", index=False)
+
+        # Sheet 3: 이직 히스토리
+        if job_changes:
+            jc_rows = []
+            for jc in job_changes:
+                jc_rows.append({
+                    "이직발령일자": jc.get("to_date", ""),
+                    "이전 언론사": jc.get("from_media", ""),
+                    "이전 부서": jc.get("from_dept", ""),
+                    "이전 직급": jc.get("from_rank", ""),
+                    "이직후 언론사": jc.get("to_media", ""),
+                    "이직후 부서": jc.get("to_dept", ""),
+                    "이직후 직급": jc.get("to_rank", ""),
+                    "경과일수": jc.get("days_gap", 0),
+                    "알고리즘신뢰도": jc.get("confidence_score", 0.0),
+                    "탐지근거": jc.get("detected_reason", "")
+                })
+            df_jc = pd.DataFrame(jc_rows)
+            df_jc.to_excel(writer, sheet_name="3_매체간_이직_기록", index=False)
+
+    return output.getvalue()
