@@ -802,36 +802,76 @@ class OnlineNewsTracker:
     }
 
     @classmethod
-    def search_online_articles(cls, query: str, max_items: int = 15) -> List[Dict[str, Any]]:
-        """다음 및 네이버 뉴스 검색을 통해 실시간 기사 목록을 수집합니다."""
+    def search_online_articles(
+        cls, 
+        query: str, 
+        max_items: int = 15,
+        client_id: str = "",
+        client_secret: str = ""
+    ) -> List[Dict[str, Any]]:
+        """
+        포털(다음·네이버·구글 뉴스 RSS) 및 네이버 공식 검색 API를 통해 실시간 기사 목록을 수집합니다.
+        네이버 API 키가 없어도 웹 크롤러가 100% 정상 작동합니다.
+        """
         encoded_query = quote(query)
         articles = []
         seen_urls = set()
 
-        # 1. 다음 뉴스 검색 (전문 스크래핑이 가장 안정적임)
-        try:
-            daum_url = f"https://search.daum.net/search?w=news&q={encoded_query}&sort=recency"
-            resp = requests.get(daum_url, headers=cls.HEADERS, timeout=6, verify=False)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                for a in soup.find_all("a"):
-                    href = a.get("href", "")
-                    if "v.daum.net/v/" in href and href not in seen_urls:
-                        seen_urls.add(href)
-                        title = a.get_text(strip=True)
-                        if len(title) >= 5:
+        # 0. 네이버 공식 검색 API (API 키가 제공된 경우 최우선 활용)
+        if client_id and client_secret:
+            try:
+                api_url = "https://openapi.naver.com/v1/search/news.json"
+                api_headers = {
+                    "X-Naver-Client-Id": client_id,
+                    "X-Naver-Client-Secret": client_secret,
+                    **cls.HEADERS
+                }
+                api_params = {"query": query, "display": min(max_items, 30), "sort": "date"}
+                api_resp = requests.get(api_url, headers=api_headers, params=api_params, timeout=5)
+                if api_resp.status_code == 200:
+                    api_data = api_resp.json()
+                    for it in api_data.get("items", []):
+                        raw_tit = re.sub(r"<[^>]+>", "", it.get("title", "")).strip()
+                        raw_tit = raw_tit.replace("&quot;", '"').replace("&amp;", '&').replace("&lt;", '<').replace("&gt;", '>')
+                        target_url = it.get("link", "") or it.get("originallink", "")
+                        if target_url and target_url not in seen_urls:
+                            seen_urls.add(target_url)
                             articles.append({
-                                "title": title,
-                                "url": href,
+                                "title": raw_tit,
+                                "url": target_url,
                                 "media": "온라인뉴스",
-                                "date_text": str(datetime.date.today())
+                                "date_text": it.get("pubDate", str(datetime.date.today()))
                             })
                             if len(articles) >= max_items:
                                 break
-        except Exception as e:
-            print(f"[Daum Search Error] {e}")
+            except Exception as e:
+                print(f"[Naver API Search Error] {e}")
 
-        # 2. 네이버 뉴스 검색
+        # 1. 다음 뉴스 검색 (전문 스크래핑이 가장 안정적임)
+        if len(articles) < max_items:
+            try:
+                daum_url = f"https://search.daum.net/search?w=news&q={encoded_query}&sort=recency"
+                resp = requests.get(daum_url, headers=cls.HEADERS, timeout=6, verify=False)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    for a in soup.find_all("a"):
+                        href = a.get("href", "")
+                        if "v.daum.net/v/" in href and href not in seen_urls:
+                            seen_urls.add(href)
+                            title = a.get_text(strip=True)
+                            if len(title) >= 5:
+                                articles.append({
+                                    "title": title,
+                                    "url": href,
+                                    "media": "온라인뉴스",
+                                    "date_text": str(datetime.date.today())
+                                })
+                                if len(articles) >= max_items:
+                                    break
+            except Exception as e:
+                print(f"[Daum Search Error] {e}")
+
+        # 2. 네이버 뉴스 웹 검색 (n.news.naver.com 기사)
         if len(articles) < max_items:
             try:
                 naver_url = f"https://search.naver.com/search.naver?where=news&query={encoded_query}&sm=tab_opt&sort=1"
@@ -840,7 +880,7 @@ class OnlineNewsTracker:
                     soup = BeautifulSoup(resp.text, "html.parser")
                     for a in soup.find_all("a"):
                         href = a.get("href", "")
-                        if ("n.news.naver.com/mnews/article" in href or "news.naver.com" in href) and href not in seen_urls:
+                        if "n.news.naver.com/mnews/article" in href and "channelPromotion" not in href and href not in seen_urls:
                             seen_urls.add(href)
                             title = a.get_text(strip=True)
                             if len(title) >= 5:
@@ -854,6 +894,41 @@ class OnlineNewsTracker:
                                     break
             except Exception as e:
                 print(f"[Naver Search Error] {e}")
+
+        # 3. 구글 뉴스 RSS (전국 주요 일간지 및 전문 매체 망라)
+        if len(articles) < max_items:
+            try:
+                g_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
+                g_resp = requests.get(g_url, headers=cls.HEADERS, timeout=5, verify=False)
+                if g_resp.status_code == 200:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(g_resp.content)
+                    for item in root.findall(".//item"):
+                        tit_elem = item.find("title")
+                        link_elem = item.find("link")
+                        if tit_elem is not None and link_elem is not None:
+                            raw_title = tit_elem.text or ""
+                            link = link_elem.text or ""
+                            if link and link not in seen_urls:
+                                seen_urls.add(link)
+                                media = "온라인뉴스"
+                                if " - " in raw_title:
+                                    parts = raw_title.rsplit(" - ", 1)
+                                    title = parts[0].strip()
+                                    media = normalize_media_name(parts[1].strip())
+                                else:
+                                    title = raw_title.strip()
+
+                                articles.append({
+                                    "title": title,
+                                    "url": link,
+                                    "media": media,
+                                    "date_text": str(datetime.date.today())
+                                })
+                                if len(articles) >= max_items:
+                                    break
+            except Exception as e:
+                print(f"[Google RSS Search Error] {e}")
 
         return articles
 
@@ -918,7 +993,12 @@ class OnlineNewsTracker:
         return result
 
     @classmethod
-    def track_reporter_online(cls, reporter_name: str) -> Dict[str, Any]:
+    def track_reporter_online(
+        cls, 
+        reporter_name: str,
+        client_id: str = "",
+        client_secret: str = ""
+    ) -> Dict[str, Any]:
         """
         특정 기자의 온라인 인사 기사 및 바이라인 기사를 실시간 검색하여
         소속 언론사, 직급/부서, 이메일을 파싱하고 DB에 등록합니다.
@@ -933,7 +1013,7 @@ class OnlineNewsTracker:
         article_count = 0
 
         for q in queries:
-            arts = cls.search_online_articles(q, max_items=8)
+            arts = cls.search_online_articles(q, max_items=8, client_id=client_id, client_secret=client_secret)
             for art in arts:
                 u = art["url"]
                 if u in searched_urls:
@@ -1009,9 +1089,14 @@ class OnlineNewsTracker:
             }
 
     @classmethod
-    def fetch_latest_online_personnel(cls, max_articles: int = 15) -> Dict[str, Any]:
+    def fetch_latest_online_personnel(
+        cls, 
+        max_articles: int = 15,
+        client_id: str = "",
+        client_secret: str = ""
+    ) -> Dict[str, Any]:
         """최신 온라인 인사 기사 전문을 대량 수집하여 파싱 및 DB에 등록합니다."""
-        arts = cls.search_online_articles("[인사]", max_items=max_articles)
+        arts = cls.search_online_articles("[인사]", max_items=max_articles, client_id=client_id, client_secret=client_secret)
         all_records = []
         for art in arts:
             fetched = cls.fetch_full_text(art["url"])

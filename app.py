@@ -340,9 +340,11 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**⚡ 빠른 온라인 실행**")
-    if st.button("🌐 최신 발령 온라인 실시간 수집", use_container_width=True, help="네이버 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
+    if st.button("🌐 최신 발령 온라인 실시간 수집", use_container_width=True, help="인터넷 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
         with st.spinner("온라인 뉴스에서 최신 인사 발령 기사 전문을 수집 및 분석 중..."):
-            res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=15)
+            nid = get_secret("naver_client_id", "")
+            nsec = get_secret("naver_client_secret", "")
+            res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=15, client_id=nid, client_secret=nsec)
             st.session_state["upload_banner"] = f"🎉 {res['message']}"
             st.rerun()
 
@@ -388,7 +390,9 @@ with tab_search:
         st.write("")
         if st.button("⚡ 최신 발령 실시간 수집", use_container_width=True, type="secondary", help="인터넷 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
             with st.spinner("온라인 포털에서 최신 인사 기사 전문을 수집 및 분석 중..."):
-                res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=15)
+                nid = get_secret("naver_client_id", "")
+                nsec = get_secret("naver_client_secret", "")
+                res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=15, client_id=nid, client_secret=nsec)
                 st.session_state["upload_banner"] = f"🎉 {res['message']}"
                 st.rerun()
 
@@ -409,7 +413,9 @@ with tab_search:
         name_clean = search_name_input.strip()
         if name_clean:
             with st.spinner(f"포털 온라인 뉴스에서 '{name_clean}' 기자의 최신 기사 및 발령문을 실시간 검색 중..."):
-                res = OnlineNewsTracker.track_reporter_online(name_clean)
+                nid = get_secret("naver_client_id", "")
+                nsec = get_secret("naver_client_secret", "")
+                res = OnlineNewsTracker.track_reporter_online(name_clean, client_id=nid, client_secret=nsec)
                 st.session_state["upload_banner"] = res["message"]
                 st.session_state["active_search_name"] = name_clean
                 st.rerun()
@@ -690,8 +696,10 @@ with tab_data:
             st.write("")
             st.write("")
             if st.button("🚀 온라인 최신 발령 즉시 수집", use_container_width=True, type="primary"):
-                with st.spinner(f"네이버 뉴스에서 최신 인사 발령 기사 {online_limit}건의 전문을 수집 및 분석 중..."):
-                    res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=online_limit)
+                with st.spinner(f"온라인 뉴스에서 최신 인사 발령 기사 {online_limit}건의 전문을 수집 및 분석 중..."):
+                    nid = get_secret("naver_client_id", "")
+                    nsec = get_secret("naver_client_secret", "")
+                    res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=online_limit, client_id=nid, client_secret=nsec)
                     st.session_state["upload_banner"] = f"🎉 {res['message']}"
                     st.rerun()
 
