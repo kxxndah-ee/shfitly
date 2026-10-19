@@ -330,8 +330,22 @@ st.markdown("""
         border: none !important;
         padding: 0 !important;
     }
+    div[data-testid="stForm"] div[data-testid="stHorizontalBlock"] {
+        align-items: flex-end !important;
+    }
     div[data-testid="stForm"] div[data-testid="stTextInput"] {
         margin-bottom: 0 !important;
+    }
+    div[data-testid="stTextInput"] input {
+        height: 42px !important;
+    }
+    div[data-testid="stFormSubmitButton"] {
+        margin-bottom: 0 !important;
+    }
+    div[data-testid="stFormSubmitButton"] button {
+        margin-bottom: 0 !important;
+        height: 42px !important;
+        min-height: 42px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -430,7 +444,7 @@ tab_search, tab_jobchanges, tab_analytics, tab_data = st.tabs([
 # =========================================================================
 with tab_search:
     # 3. 검색 모드 선택 (이름 검색 vs 매체 및 부서별 검색)
-    col_mode, col_quick_btn = st.columns([3, 1])
+    col_mode, col_quick_btn = st.columns([3, 1], vertical_alignment="bottom")
     with col_mode:
         search_mode = st.radio(
             "검색 모드 선택",
@@ -441,7 +455,6 @@ with tab_search:
         )
         st.session_state["search_mode_selection"] = search_mode
     with col_quick_btn:
-        st.write("")
         if st.button("최신 발령 실시간 수집", use_container_width=True, type="secondary", help="인터넷 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
             with st.spinner("온라인 포털에서 최신 인사 기사 전문을 수집 및 분석 중..."):
                 nid = get_secret("naver_client_id", "")
@@ -484,7 +497,7 @@ with tab_search:
     else:
         st.markdown("##### 매체 및 부서별 검색")
         with st.form(key="media_dept_search_form", clear_on_submit=False):
-            fcol1, fcol2, fcol3, fcol_btn = st.columns([3, 3, 3, 1])
+            fcol1, fcol2, fcol3, fcol_btn = st.columns([3, 3, 3, 1], vertical_alignment="bottom")
             with fcol1:
                 media_input = st.text_input("매체명", value=st.session_state.get("filter_media_val", ""), key="f_media")
             with fcol2:
@@ -492,7 +505,6 @@ with tab_search:
             with fcol3:
                 rank_input = st.text_input("직급명", value=st.session_state.get("filter_rank_val", ""), key="f_rank")
             with fcol_btn:
-                st.write("")
                 filter_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
 
         if filter_submitted:
