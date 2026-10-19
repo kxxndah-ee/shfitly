@@ -123,7 +123,10 @@ STOPWORDS = {
     "인사", "발령", "본사", "지사", "편집국", "보도국", "신문", "방송", "뉴스", "한국", "일보",
     "매일", "경제", "대표", "국장", "부장", "차장", "팀장", "기자", "위원", "실장", "총괄",
     "대우", "승진", "전보", "보임", "신규", "선임", "퇴임", "파견", "내정", "전보자",
-    "외", "등", "겸", "및", "간", "후보", "부국장"
+    "외", "등", "겸", "및", "간", "후보", "부국장",
+    "카톡", "이메일", "제보", "문의", "게재", "연락처", "포함", "담당자", "저작권",
+    "무단전재", "재배포", "신문사", "제보는", "산업국", "중앙신문", "경향신문", "한국정경",
+    "서울경제", "한겨레", "조선일보", "동아일보", "연합뉴스", "뉴스1", "뉴시스"
 }
 
 
@@ -275,6 +278,10 @@ class PersonnelRegexParser:
         lines = [line.strip() for line in article_text.splitlines() if line.strip()]
 
         for line in lines:
+            # 0. 푸터, 제보 및 문의 안내 문구 스킵
+            if any(k in line for k in ["게재 문의", "제보", "저작권", "무단전재", "재배포", "기사문의", "확인용", "카톡", "연락처"]):
+                continue
+
             # 1. 언론사 변경 감지 (기사 중간에 다른 언론사 헤더가 나올 경우)
             media_match = cls.MEDIA_HEADER_PATTERN.search(line)
             if media_match:
@@ -1346,6 +1353,116 @@ class OnlineNewsTracker:
                 "message": "온라인 기사를 가져왔으나 발령 명단을 추출하지 못했습니다."
             }
 
+    @classmethod
+    def fetch_daily_personnel_news(
+        cls,
+        target_date: str = "",
+        max_articles: int = 25,
+        client_id: str = "",
+        client_secret: str = ""
+    ) -> Dict[str, Any]:
+        """
+        당일(또는 지정된 일자)의 공식 [인사]/<인사> 기사를 실시간 크롤링하여
+        언론사별, 발령구분(승진/전보/보임/선임)별로 구조화된 일일 인사 소식 브리핑 데이터를 생성하고
+        DB에 영속화합니다.
+        """
+        if not target_date:
+            target_date = datetime.date.today().strftime("%Y-%m-%d")
+
+        search_queries = [
+            "[인사] 신문",
+            "[인사] 일보",
+            "[인사] 경제",
+            "[인사] 방송",
+            "[인사] 미디어",
+            "[인사] 뉴스",
+            "[인사] 통신",
+            "[인사]"
+        ]
+
+        seen_urls = set()
+        collected_articles = []
+
+        for q in search_queries:
+            if len(collected_articles) >= max_articles * 2:
+                break
+            arts = cls.search_online_articles(q, max_items=12, client_id=client_id, client_secret=client_secret)
+            for a in arts:
+                if not is_personnel_article_title(a.get("title", "")):
+                    continue
+                u = a.get("url", "")
+                if not u or u in seen_urls:
+                    continue
+                seen_urls.add(u)
+                collected_articles.append(a)
+
+        all_records = []
+        media_news_map = {}
+
+        for a in collected_articles[:max_articles]:
+            fetched = cls.fetch_full_text(a["url"])
+            body = fetched.get("text", "")
+            if not body or len(body) < 30:
+                continue
+
+            pub_date = fetched.get("pub_date") or a.get("date_text") or target_date
+            art_media = fetched.get("media") if fetched.get("media") != "온라인뉴스" else a.get("media")
+
+            recs = PersonnelRegexParser.parse_article_text(
+                article_text=body,
+                default_media=art_media,
+                article_title=a["title"],
+                pub_date=pub_date,
+                article_url=a["url"]
+            )
+            clean_recs = [
+                r for r in recs 
+                if r["name"] not in STOPWORDS and len(r["name"]) >= 2
+            ]
+            if not clean_recs:
+                continue
+
+            main_media = clean_recs[0]["media"]
+            if main_media not in media_news_map:
+                media_news_map[main_media] = {
+                    "media": main_media,
+                    "articles": [],
+                    "records": [],
+                    "by_action": {}
+                }
+
+            media_news_map[main_media]["articles"].append({
+                "title": a["title"],
+                "url": a["url"],
+                "pub_date": pub_date
+            })
+            media_news_map[main_media]["records"].extend(clean_recs)
+            for r in clean_recs:
+                act = r.get("action_type", "발령")
+                if act not in media_news_map[main_media]["by_action"]:
+                    media_news_map[main_media]["by_action"][act] = []
+                media_news_map[main_media]["by_action"][act].append(r)
+
+            all_records.extend(clean_recs)
+
+        job_changes_detected = []
+        if all_records:
+            engine = PersonnelTrackerEngine()
+            res = engine.process_records(all_records, append=True)
+            job_changes_detected = engine.db.get_job_changes(limit=50)
+
+        return {
+            "target_date": target_date,
+            "total_articles": len([a for m in media_news_map.values() for a in m["articles"]]),
+            "total_media": len(media_news_map),
+            "total_records": len(all_records),
+            "media_news": list(media_news_map.values()),
+            "all_records": all_records,
+            "job_changes": job_changes_detected,
+            "message": f"당일 및 최신 인사 기사에서 {len(media_news_map)}개 언론사, 총 {len(all_records)}명의 발령 소식을 성공적으로 정리했습니다."
+        }
+
+
 
 # ==========================================
 # 5. SQLite 데이터베이스 및 영속화 레이어
@@ -1707,6 +1824,56 @@ class MediaDatabase:
                 "changes": changes_cnt,
                 "media_count": media_cnt
             }
+
+    def get_daily_personnel_summary(self, target_date: str = "") -> Dict[str, Any]:
+        """
+        DB에 저장된 발령 레코드 중 당일(또는 지정된 일자/최근 일자)의 데이터를
+        언론사별 및 발령구분(승진/전보/보임 등)별로 구조화하여 반환합니다.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if target_date:
+                cursor.execute("""
+                    SELECT * FROM personnel_records
+                    WHERE pub_date LIKE ?
+                    ORDER BY pub_date DESC, media ASC, id ASC
+                """, (f"{target_date}%",))
+            else:
+                cursor.execute("""
+                    SELECT * FROM personnel_records
+                    ORDER BY pub_date DESC, media ASC, id ASC
+                    LIMIT 200
+                """)
+            rows = [dict(row) for row in cursor.fetchall()]
+
+        grouped = {}
+        for r in rows:
+            med = r.get("media", "미상")
+            if med not in grouped:
+                grouped[med] = {
+                    "media": med,
+                    "records": [],
+                    "by_action": {},
+                    "latest_date": r.get("pub_date", ""),
+                    "article_title": r.get("article_title", ""),
+                    "article_url": r.get("article_url", "")
+                }
+            grouped[med]["records"].append(r)
+            act = r.get("action_type", "발령")
+            if act not in grouped[med]["by_action"]:
+                grouped[med]["by_action"][act] = []
+            grouped[med]["by_action"][act].append(r)
+            if not grouped[med]["article_url"] and r.get("article_url"):
+                grouped[med]["article_url"] = r.get("article_url", "")
+                grouped[med]["article_title"] = r.get("article_title", "")
+
+        return {
+            "total_records": len(rows),
+            "media_count": len(grouped),
+            "media_news": list(grouped.values()),
+            "raw_records": rows
+        }
+
 
 
 # ==========================================

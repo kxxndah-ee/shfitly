@@ -431,12 +431,11 @@ st.markdown("""
 if "upload_banner" in st.session_state and st.session_state["upload_banner"]:
     st.success(st.session_state["upload_banner"])
 
-tab_search, tab_jobchanges, tab_analytics, tab_data = st.tabs([
+tab_search, tab_monitoring = st.tabs([
     "1. 검색",
-    "2. 이직 모니터링",
-    "3. 이동 통계 및 네트워크",
-    "4. 데이터 관리 및 수집"
+    "2. 인사 모니터링"
 ])
+
 
 
 # =========================================================================
@@ -802,313 +801,249 @@ with tab_search:
 
 
 # =========================================================================
+# TAB 2: 인사 모니터링
 # =========================================================================
-# TAB 2: 이직 모니터링
-# =========================================================================
-with tab_jobchanges:
-    st.markdown("### 이직 모니터링")
-    st.markdown("정규표현식 파싱 및 알고리즘 휴리스틱을 통해 탐지된 언론인 매체 이동 내역입니다.")
+with tab_monitoring:
+    st.markdown("### 인사 모니터링")
+    st.caption("당일 나온 언론사 공식 인사 기사를 실시간 모니터링하여 언론사별, 발령 구분별로 일목요연하게 정리한 인사 소식 브리핑입니다.")
 
-    changes = db.get_job_changes(limit=200)
-
-    if not changes:
-        st.info("탐지된 매체 간 이직 데이터가 없습니다. 상단 '데이터 관리 및 수집' 탭에서 데이터를 로드하세요.")
-    else:
-        # 상단 KPI 지표 카드 4종
-        df_changes = pd.DataFrame(changes)
-        total_jc = len(df_changes)
-        
-        # 최다 유입 언론사, 유출 언론사
-        top_in = df_changes["to_media"].mode()[0] if not df_changes.empty else "-"
-        top_out = df_changes["from_media"].mode()[0] if not df_changes.empty else "-"
-        avg_score = round(df_changes["confidence_score"].mean(), 1) if not df_changes.empty else 0.0
-
-        mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-        with mcol1:
-            render_html(f"""
-            <div class="metric-card">
-                <div class="metric-label">총 이직 탐지 건수</div>
-                <div class="metric-value">{total_jc}건</div>
-                <div class="metric-sub">매체 간 이동 감지</div>
-            </div>
-            """)
-        with mcol2:
-            render_html(f"""
-            <div class="metric-card">
-                <div class="metric-label">최다 유입 언론사</div>
-                <div class="metric-value">{top_in}</div>
-                <div class="metric-sub">외부 기자 적극 영입</div>
-            </div>
-            """)
-        with mcol3:
-            render_html(f"""
-            <div class="metric-card">
-                <div class="metric-label">최다 유출 언론사</div>
-                <div class="metric-value">{top_out}</div>
-                <div class="metric-sub">타사 이직 발생 매체</div>
-            </div>
-            """)
-        with mcol4:
-            render_html(f"""
-            <div class="metric-card">
-                <div class="metric-label">평균 알고리즘 신뢰도</div>
-                <div class="metric-value">{avg_score}점</div>
-                <div class="metric-sub">연속성 및 도메인 일치도</div>
-            </div>
-            """)
-
-        # 필터링 컨트롤
-        st.markdown("##### 이직 내역 필터")
-        fcol1, fcol2, fcol3 = st.columns(3)
-        with fcol1:
-            media_filter = st.selectbox("언론사 필터", ["전체"] + sorted(list(set(df_changes["from_media"].tolist() + df_changes["to_media"].tolist()))))
-        with fcol2:
-            period_filter = st.selectbox("조회 기간", ["전체 기간", "최근 1년 이내", "최근 6개월 이내"])
-        with fcol3:
-            sort_by = st.selectbox("정렬 기준", ["최신 발령일순", "알고리즘 신뢰도 점수순"])
-
-        # 필터 적용
-        filtered_df = df_changes.copy()
-        if media_filter != "전체":
-            filtered_df = filtered_df[(filtered_df["from_media"] == media_filter) | (filtered_df["to_media"] == media_filter)]
-        
-        if sort_by == "최신 발령일순":
-            filtered_df = filtered_df.sort_values(by="to_date", ascending=False)
-        else:
-            filtered_df = filtered_df.sort_values(by="confidence_score", ascending=False)
-
-        # 이직 카드 피드 렌더링
-        st.markdown(f"**총 {len(filtered_df)}건의 이직 이벤트가 조회되었습니다.**")
-        for _, row in filtered_df.iterrows():
-            render_html(f"""
-            <div class="jobchange-card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                    <div style="font-size: 1.15rem; font-weight: 800; color: #0F172A;">
-                        <span style="color: #7C3AED;">이직</span> {row['name']} 기자
-                    </div>
-                    <div style="font-size: 0.85rem; color: #64748B; font-weight: 600;">
-                        발령일: {row['to_date']} : 이전 발령 후 {row['days_gap']}일 경과
-                    </div>
-                </div>
-                <div style="font-size: 1.05rem; font-weight: 700; color: #1E293B; margin: 8px 0;">
-                    <span style="color: #64748B;">{row['from_media']} {row['from_dept']}</span> {row['from_rank']}
-                    &nbsp;➔&nbsp;
-                    <span style="color: #2563EB;">{row['to_media']} {row['to_dept']}</span> {row['to_rank']}
-                </div>
-                <div style="font-size: 0.85rem; color: #475569; display: flex; gap: 8px; align-items: center; margin-top: 6px;">
-                    <span class="badge badge-jobchange">신뢰도: {row['confidence_score']}점</span>
-                    <span>탐지 근거: <b>{row['detected_reason']}</b></span>
-                </div>
-            </div>
-            """)
-
-
-# =========================================================================
-# TAB 3: 이동 통계 및 네트워크
-# =========================================================================
-with tab_analytics:
-    st.markdown("### 이동 통계 및 네트워크")
-
-    with db.get_connection() as conn:
-        df_all_rec = pd.read_sql_query("SELECT * FROM personnel_records", conn)
-
-    if df_all_rec.empty:
-        st.info("통계 분석을 위한 데이터가 부족합니다.")
-    else:
-        acol1, acol2 = st.columns(2)
-        with acol1:
-            st.markdown("##### 주요 언론사별 인사 발령 건수")
-            media_counts = df_all_rec["media"].value_counts().reset_index()
-            media_counts.columns = ["언론사", "발령 건수"]
-            st.dataframe(media_counts, use_container_width=True, hide_index=True)
-
-        with acol2:
-            st.markdown("##### 출입처 도메인별 인사 분포")
-            domain_counts = df_all_rec["domain"].value_counts().reset_index()
-            domain_counts.columns = ["도메인", "발령 건수"]
-            st.dataframe(domain_counts, use_container_width=True, hide_index=True)
-
-        st.markdown("---")
-        st.markdown("##### 직급별 발령 분포")
-        rank_counts = df_all_rec["rank_title"].value_counts().head(10).reset_index()
-        rank_counts.columns = ["직급", "건수"]
-        st.bar_chart(data=rank_counts.set_index("직급"), use_container_width=True)
-
-
-# =========================================================================
-# TAB 4: 데이터 관리 및 수집
-# =========================================================================
-with tab_data:
-    st.markdown("### 데이터 관리 및 수집")
-
-    dcol1, dcol2 = st.columns(2)
-
-    with dcol1:
-        st.markdown("#### 최신 온라인 기사 실시간 수집")
-        st.write("네이버 뉴스에서 최근 인사 발령 기사 전문을 실시간으로 가져와 자동 분석 및 등록합니다.")
-        col_on1, col_on2 = st.columns([2, 1])
-        with col_on1:
-            online_limit = st.slider("수집할 최신 기사 수", min_value=5, max_value=25, value=15, step=5)
-        with col_on2:
-            st.write("")
-            st.write("")
-            if st.button("온라인 최신 발령 즉시 수집", use_container_width=True, type="primary"):
-                with st.spinner(f"온라인 뉴스에서 최신 인사 발령 기사 {online_limit}건의 전문을 수집 및 분석 중..."):
-                    nid = get_secret("naver_client_id", "")
-                    nsec = get_secret("naver_client_secret", "")
-                    res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=online_limit, client_id=nid, client_secret=nsec)
-                    st.session_state["upload_banner"] = res["message"]
-                    st.rerun()
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 빅카인즈 파일 업로드")
-        st.write("빅카인즈에서 다운로드한 엑셀 또는 CSV 파일을 업로드하세요.")
-        
-        upload_mode = st.radio(
-            "반영 방식 선택",
-            ["기존 데이터에 누적하여 추가", "기존 데이터 비우고 새로 교체"],
-            horizontal=True,
-            help="기존에 업로드한 기자 명단에 새 파일의 발령 명단을 덧붙여 누적할지, 아니면 초기화하고 교체할지 선택합니다."
-        )
-
-        uploaded_file = st.file_uploader(
-            "빅카인즈 파일 선택",
-            type=["xlsx", "xls", "csv"],
-            help="일자, 언론사, 제목, 본문 컬럼이 포함되어 있어야 합니다."
-        )
-
-        if uploaded_file is not None:
-            if st.button("업로드 파일 처리 및 데이터베이스 반영", use_container_width=True):
-                with st.spinner("빅카인즈 기사 본문 정규식 파싱, 동명이인 클러스터링 및 누적 처리 중..."):
-                    try:
-                        is_append = (upload_mode == "기존 데이터에 누적하여 추가")
-                        res = load_and_process_bigkinds_file(uploaded_file, append=is_append)
-                        new_cnt = res.get('new_records', res['total_records'])
-                        st.session_state["upload_banner"] = (
-                            f"'{uploaded_file.name}' 반영 완료 : "
-                            f"신규 발령 {new_cnt}건 추가 반영, 현재 총 언론인 {res['unique_reporters']}명, "
-                            f"총 발령 {res['total_records']}건, 탐지된 이직 {res['job_changes_detected']}건"
-                        )
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"파일 처리 중 오류가 발생했습니다: {e}")
-                        st.info("엑셀 파일 안에 일자, 언론사, 본문 컬럼과 부서명, 직책, 이름 형태의 발령 내용이 들어있는지 확인해주세요.")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 기본 샘플 로드 및 데이터 초기화")
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("샘플 데이터 로드", use_container_width=True):
-                sample_path = "sample_data/bigkinds_personnel_sample.xlsx"
-                if os.path.exists(sample_path):
-                    with st.spinner("샘플 데이터 파싱 중..."):
-                        res = load_and_process_bigkinds_file(sample_path, append=False)
-                        st.session_state["upload_banner"] = f"샘플 데이터로 초기화되었습니다. : 총 레코드 {res['total_records']}건"
-                        st.rerun()
-                else:
-                    st.error("샘플 데이터 파일을 찾을 수 없습니다.")
-        with col_btn2:
-            if st.button("전체 데이터 완전히 비우기", use_container_width=True):
-                db.clear_all_data()
-                st.session_state["upload_banner"] = "모든 데이터가 삭제되었습니다. 이제 온라인 기사 검색을 시작해보세요."
+    # 상단 컨트롤 바 (일자 선택, 검색창, 실시간 수집 버튼)
+    m_col_date, m_col_search, m_col_btn = st.columns([1.2, 1.8, 1.2], vertical_alignment="bottom")
+    with m_col_date:
+        today_date = datetime.date.today()
+        selected_date = st.date_input("모니터링 일자", value=today_date, max_value=today_date)
+    with m_col_search:
+        filter_kw = st.text_input("인사 소식 내 검색", placeholder="언론사명, 기자명, 부서명 검색", label_visibility="visible")
+    with m_col_btn:
+        if st.button("당일 인사 실시간 수집 및 새로고침", use_container_width=True, type="primary"):
+            with st.spinner("온라인 포털에서 당일 및 최신 인사 기사 전문을 실시간 수집 및 분석 중..."):
+                nid = get_secret("naver_client_id", "")
+                nsec = get_secret("naver_client_secret", "")
+                res = OnlineNewsTracker.fetch_daily_personnel_news(
+                    target_date=str(selected_date),
+                    max_articles=25,
+                    client_id=nid,
+                    client_secret=nsec
+                )
+                st.session_state["upload_banner"] = res.get("message", "인사 기사 실시간 수집 및 정리가 완료되었습니다.")
                 st.rerun()
 
-    with dcol2:
-        st.markdown("#### 기사 텍스트 직접 붙여넣기")
-        st.write("인터넷 기사의 인사 발령 텍스트를 그대로 복사해 붙여넣으면 즉시 파싱하여 등록합니다.")
+    # 데이터 로드: 선택된 일자 우선 조회, 없으면 최근 전체 조회
+    date_str = str(selected_date)
+    summary_data = db.get_daily_personnel_summary(date_str)
+    is_showing_fallback = False
 
-        with st.expander("텍스트 직접 입력창 열기", expanded=True):
-            pcol1, pcol2 = st.columns(2)
-            with pcol1:
-                paste_media = st.text_input("언론사명")
-            with pcol2:
-                paste_date = st.date_input("발령 일자", value=datetime.date.today())
+    if summary_data["total_records"] == 0:
+        # 당일 데이터가 아직 수집되지 않은 경우 최근 발령 데이터로 대체 표시
+        summary_data = db.get_daily_personnel_summary("")
+        is_showing_fallback = True
+
+    all_raw_recs = summary_data["raw_records"]
+    media_news_list = summary_data["media_news"]
+
+    # 키워드 필터링 적용 (언론사명, 기자명, 부서명)
+    if filter_kw.strip():
+        kw = filter_kw.strip().lower()
+        filtered_media_news = []
+        filtered_recs = []
+        for mn in media_news_list:
+            matched_records = [
+                r for r in mn["records"]
+                if kw in r.get("media", "").lower() or kw in r.get("name", "").lower() or kw in r.get("dept", "").lower() or kw in r.get("rank_title", "").lower()
+            ]
+            if matched_records or kw in mn.get("media", "").lower():
+                recs_to_use = matched_records if matched_records else mn["records"]
+                by_act = {}
+                for r in recs_to_use:
+                    act = r.get("action_type", "발령")
+                    if act not in by_act:
+                        by_act[act] = []
+                    by_act[act].append(r)
+                filtered_media_news.append({
+                    "media": mn["media"],
+                    "records": recs_to_use,
+                    "by_action": by_act,
+                    "latest_date": mn.get("latest_date", ""),
+                    "article_title": mn.get("article_title", ""),
+                    "article_url": mn.get("article_url", "")
+                })
+                filtered_recs.extend(recs_to_use)
+        media_news_list = filtered_media_news
+        all_raw_recs = filtered_recs
+
+    # 상단 4대 핵심 모니터링 KPI 카드
+    total_recs_count = len(all_raw_recs)
+    total_media_count = len(media_news_list)
+    promotions_count = sum(1 for r in all_raw_recs if "승진" in r.get("action_type", ""))
+    transfers_count = sum(1 for r in all_raw_recs if any(k in r.get("action_type", "") for k in ["전보", "보임", "보직"]))
+    
+    # 최근 감지된 이직 건수
+    job_changes = db.get_job_changes(limit=10)
+    job_changes_count = len(job_changes)
+
+    date_display_text = date_str if not is_showing_fallback else f"최근 수집"
+
+    mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+    with mcol1:
+        render_html(f"""
+        <div class="metric-card">
+            <div class="metric-label">모니터링 기준 일자</div>
+            <div class="metric-value" style="font-size:1.4rem;">{date_display_text}</div>
+            <div class="metric-sub">공식 인사 기사 모니터링</div>
+        </div>
+        """)
+    with mcol2:
+        render_html(f"""
+        <div class="metric-card">
+            <div class="metric-label">발령 언론사 수</div>
+            <div class="metric-value">{total_media_count}개사</div>
+            <div class="metric-sub">주요 신문·방송·통신</div>
+        </div>
+        """)
+    with mcol3:
+        render_html(f"""
+        <div class="metric-card">
+            <div class="metric-label">총 발령 인원</div>
+            <div class="metric-value">{total_recs_count}명</div>
+            <div class="metric-sub">승진 {promotions_count}건 · 전보/보임 {transfers_count}건</div>
+        </div>
+        """)
+    with mcol4:
+        render_html(f"""
+        <div class="metric-card">
+            <div class="metric-label">매체 간 이직 탐지</div>
+            <div class="metric-value">{job_changes_count}건</div>
+            <div class="metric-sub">최근 매체 이동 감지</div>
+        </div>
+        """)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    if is_showing_fallback and not filter_kw.strip():
+        st.info(f"{date_str} 일자의 공식 인사 기사가 아직 수집되지 않아 가장 최근 수집된 인사 소식을 표시하고 있습니다. 실시간 기사를 확인하시려면 상단 '당일 인사 실시간 수집 및 새로고침' 버튼을 눌러주세요.")
+
+    if not media_news_list:
+        st.warning("표시할 인사 소식이 없습니다. 상단 '당일 인사 실시간 수집 및 새로고침' 버튼을 눌러 온라인 기사에서 발령 명단을 수집하세요.")
+    else:
+        st.markdown("#### 언론사별 인사 소식 정리")
+
+        for mn in media_news_list:
+            m_name = mn["media"]
+            m_recs = mn["records"]
+            m_by_act = mn.get("by_action", {})
+            m_date = mn.get("latest_date", "")
+            art_title = mn.get("article_title", "")
+            art_url = mn.get("article_url", "")
+
+            # 기사 원문 링크
+            art_link_html = ""
+            if art_url:
+                art_link_html = f'<div style="margin-top:6px;"><a href="{art_url}" target="_blank" style="font-size:0.85rem; font-weight:600; color:#2563EB; text-decoration:underline;">기사 원문: {art_title or (m_name + " 인사")}</a></div>'
+            elif art_title:
+                art_link_html = f'<div style="margin-top:6px; font-size:0.85rem; color:#475569;">기사 제목: <b>{art_title}</b></div>'
+
+            # 발령 구분별 요약 렌더링
+            actions_html = '<div style="margin-top:12px; display:flex; flex-direction:column; gap:8px;">'
+            for act_name, act_list in m_by_act.items():
+                if "승진" in act_name:
+                    badge_style = "background:#DCFCE7; color:#15803D; border:1px solid #BBF7D0;"
+                elif "전보" in act_name or "보직" in act_name or "보임" in act_name:
+                    badge_style = "background:#DBEAFE; color:#1D4ED8; border:1px solid #BFDBFE;"
+                else:
+                    badge_style = "background:#F1F5F9; color:#334155; border:1px solid #E2E8F0;"
+
+                people_text_list = []
+                for r in act_list:
+                    d = r.get("dept", "").strip()
+                    rt = r.get("rank_title", "").strip()
+                    n = r.get("name", "").strip()
+                    dept_str = f"{d} " if d and d != "본사" else ""
+                    people_text_list.append(f"<b>{n}</b> ({dept_str}{rt})")
+
+                actions_html += f"""
+                <div style="font-size:0.92rem; line-height:1.6; background:#F8FAFC; padding:8px 12px; border-radius:6px; border:1px solid #F1F5F9;">
+                    <span style="display:inline-block; padding:2px 8px; border-radius:4px; font-size:0.8rem; font-weight:700; margin-right:8px; {badge_style}">{act_name}</span>
+                    <span style="color:#1E293B;">{", ".join(people_text_list)}</span>
+                </div>
+                """
+            actions_html += '</div>'
+
+            render_html(f"""
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:10px; padding:18px 20px; margin-bottom:14px; box-shadow:0 1px 3px rgba(0,0,0,0.03);">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <div>
+                        <span style="font-size:1.2rem; font-weight:800; color:#0F172A;">{m_name}</span>
+                        <span style="margin-left:8px; font-size:0.82rem; font-weight:700; background:#E2E8F0; color:#334155; padding:3px 8px; border-radius:12px;">발령 {len(m_recs)}명</span>
+                    </div>
+                    <div style="font-size:0.85rem; color:#64748B; font-weight:600;">
+                        발령 일자: {m_date}
+                    </div>
+                </div>
+                {art_link_html}
+                {actions_html}
+            </div>
+            """)
+
+        # 전체 명단 표 & 다운로드
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("#### 발령 전체 명단")
+        
+        table_rows = []
+        for r in all_raw_recs:
+            table_rows.append({
+                "언론사": r.get("media", ""),
+                "발령구분": r.get("action_type", "발령"),
+                "부서": r.get("dept", ""),
+                "직급": r.get("rank_title", ""),
+                "성명": r.get("name", ""),
+                "발령일자": r.get("pub_date", ""),
+                "기사제목": r.get("article_title", "")
+            })
+        
+        if table_rows:
+            df_table = pd.DataFrame(table_rows)
+            st.dataframe(df_table, use_container_width=True, hide_index=True)
+
+            # 엑셀 다운로드
+            dl_buf = io.BytesIO()
+            with pd.ExcelWriter(dl_buf, engine="openpyxl") as writer:
+                df_table.to_excel(writer, sheet_name="당일인사소식", index=False)
             
-            paste_title = st.text_input("기사 제목")
-            paste_text = st.text_area(
-                "발령 기사 본문 붙여넣기",
-                height=140
+            st.download_button(
+                "당일 인사 소식 엑셀 다운로드",
+                data=dl_buf.getvalue(),
+                file_name=f"{date_str}_언론사인사소식.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="btn_dl_daily"
             )
 
-            if st.button("붙여넣은 본문 즉시 분석 및 데이터베이스 등록", use_container_width=True):
-                if not paste_text.strip():
-                    st.warning("발령 기사 본문을 입력해주세요.")
-                else:
-                    parsed_records = PersonnelRegexParser.parse_article_text(
-                        article_text=paste_text,
-                        default_media=paste_media or "미상",
-                        article_title=paste_title or "",
-                        pub_date=str(paste_date)
-                    )
-                    if not parsed_records:
-                        st.error("입력된 텍스트에서 부서명, 직책, 이름 형태의 발령 대상을 추출하지 못했습니다.")
-                    else:
-                        engine = PersonnelTrackerEngine()
-                        res = engine.process_records(parsed_records, append=True)
-                        st.session_state["upload_banner"] = (
-                            f"직접 입력한 기사에서 {len(parsed_records)}명의 발령 기록을 등록했습니다. : "
-                            f"총 누적 언론인 {res['unique_reporters']}명"
-                        )
-                        st.rerun()
+        # 이직 모니터링 특이사항
+        if job_changes:
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("#### 최근 매체 간 이직 모니터링")
+            st.caption("인사 리스트를 기반으로 자동 감지된 매체 이동 내역입니다.")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 네이버 뉴스 검색 연동")
-        st.write("기자의 이름과 언론사명을 검색해 본문 바이라인에서 이메일을 추출하고 고유 식별자를 보완합니다.")
+            for jc in job_changes[:5]:
+                render_html(f"""
+                <div class="jobchange-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <div style="font-size: 1.1rem; font-weight: 800; color: #0F172A;">
+                            <span style="color: #475569;">이직</span> {jc['name']} 기자
+                        </div>
+                        <div style="font-size: 0.82rem; color: #64748B; font-weight: 600;">
+                            발령일: {jc['to_date']} : 이전 발령 후 {jc['days_gap']}일 경과
+                        </div>
+                    </div>
+                    <div style="font-size: 1rem; font-weight: 700; color: #1E293B; margin: 6px 0;">
+                        <span style="color: #64748B;">{jc['from_media']} {jc['from_dept']}</span> {jc['from_rank']}
+                        &nbsp;➔&nbsp;
+                        <span style="color: #0F172A;">{jc['to_media']} {jc['to_dept']}</span> {jc['to_rank']}
+                    </div>
+                    <div style="font-size: 0.82rem; color: #475569; display: flex; gap: 8px; align-items: center; margin-top: 6px;">
+                        <span class="badge badge-normal">신뢰도: {jc['confidence_score']}점</span>
+                        <span>탐지 근거: <b>{jc['detected_reason']}</b></span>
+                    </div>
+                </div>
+                """)
 
-        naver_id = st.text_input("클라이언트 아이디", value=get_secret("naver_client_id", ""), type="password")
-        naver_secret = st.text_input("클라이언트 시크릿", value=get_secret("naver_client_secret", ""), type="password")
-
-        if st.button("네이버 바이라인 이메일 동기화 실행", use_container_width=True):
-            if not naver_id or not naver_secret:
-                st.warning("네이버 개발자 센터에서 발급받은 인증 정보를 입력해주세요.")
-            else:
-                with st.spinner("네이버 뉴스 검색을 통해 기자별 이메일 바이라인 탐색 중..."):
-                    finder = NaverNewsEmailFinder(client_id=naver_id, client_secret=naver_secret)
-                    reporters = db.get_all_reporters()
-                    updated_cnt = 0
-                    for r in reporters[:30]:
-                        if not r.get("email"):
-                            found = finder.search_reporter_email(name=r["name"], media=r["current_media"])
-                            if found:
-                                with db.get_connection() as conn:
-                                    conn.cursor().execute(
-                                        "UPDATE reporters SET email = ? WHERE reporter_id = ?",
-                                        (found, r["reporter_id"])
-                                    )
-                                    conn.commit()
-                                updated_cnt += 1
-                    st.success(f"이메일 동기화 완료 : 총 {updated_cnt}명의 바이라인 이메일을 보완 등록했습니다.")
-                    time.sleep(1)
-                    st.rerun()
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 전체 데이터 내보내기")
-        with db.get_connection() as conn:
-            export_df = pd.read_sql_query("SELECT * FROM reporters", conn)
-            rec_df = pd.read_sql_query("SELECT * FROM personnel_records", conn)
-            jc_df = pd.read_sql_query("SELECT * FROM job_changes", conn)
-
-            col_ex1, col_ex2 = st.columns(2)
-            with col_ex1:
-                xl_buf = io.BytesIO()
-                with pd.ExcelWriter(xl_buf, engine="openpyxl") as writer:
-                    export_df.to_excel(writer, sheet_name="기자_마스터", index=False)
-                    rec_df.to_excel(writer, sheet_name="발령_레코드", index=False)
-                    jc_df.to_excel(writer, sheet_name="이직_기록", index=False)
-                st.download_button(
-                    "전체 데이터 엑셀 다운로드",
-                    data=xl_buf.getvalue(),
-                    file_name="media_personnel_master.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            with col_ex2:
-                csv_bytes = export_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                st.download_button(
-                    "등록 기자 명단 다운로드",
-                    data=csv_bytes,
-                    file_name="media_reporters_master.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
