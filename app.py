@@ -429,21 +429,8 @@ tab_search, tab_jobchanges, tab_analytics, tab_data = st.tabs([
 # TAB 1: 검색
 # =========================================================================
 with tab_search:
-    col_title, col_quick_btn = st.columns([3, 1])
-    with col_title:
-        st.markdown("### 검색")
-    with col_quick_btn:
-        st.write("")
-        if st.button("최신 발령 실시간 수집", use_container_width=True, type="secondary", help="인터넷 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
-            with st.spinner("온라인 포털에서 최신 인사 기사 전문을 수집 및 분석 중..."):
-                nid = get_secret("naver_client_id", "")
-                nsec = get_secret("naver_client_secret", "")
-                res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=15, client_id=nid, client_secret=nsec)
-                st.session_state["upload_banner"] = res["message"]
-                st.rerun()
-
-    # 검색창 길이 1/3로 축소 배치 및 예시 삭제
-    col_search_box, col_search_empty = st.columns([1, 2])
+    # 검색창 길이 1/3 축소 및 상단 '검색' 텍스트 삭제
+    col_search_box, col_gap, col_quick_btn = st.columns([1, 1, 1])
     with col_search_box:
         with st.form(key="realtime_search_form", clear_on_submit=False):
             col_in, col_btn = st.columns([3, 1])
@@ -456,6 +443,15 @@ with tab_search:
                 )
             with col_btn:
                 search_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
+
+    with col_quick_btn:
+        if st.button("최신 발령 실시간 수집", use_container_width=True, type="secondary", help="인터넷 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
+            with st.spinner("온라인 포털에서 최신 인사 기사 전문을 수집 및 분석 중..."):
+                nid = get_secret("naver_client_id", "")
+                nsec = get_secret("naver_client_secret", "")
+                res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=15, client_id=nid, client_secret=nsec)
+                st.session_state["upload_banner"] = res["message"]
+                st.rerun()
 
     if search_submitted:
         name_clean = search_name_input.strip()
