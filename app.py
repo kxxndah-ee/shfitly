@@ -13,8 +13,12 @@ import io
 import time
 import datetime
 import threading
+import base64
+from pathlib import Path
+from PIL import Image
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from data_pipeline import (
     MediaDatabase,
@@ -35,11 +39,49 @@ from data_pipeline import (
 # 1. 페이지 설정 및 모던 카드 스타일 CSS
 # ==========================================
 
+FAVICON_PATH = Path(__file__).parent / "assets" / "favicon.png"
+fav_icon = "S"
+_b64_fav = ""
+
+if FAVICON_PATH.exists():
+    try:
+        fav_icon = Image.open(FAVICON_PATH)
+        with open(FAVICON_PATH, "rb") as _f:
+            _b64_fav = base64.b64encode(_f.read()).decode("utf-8")
+    except Exception:
+        fav_icon = "S"
+
 st.set_page_config(
     page_title="Shiftly",
+    page_icon=fav_icon,
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# 크롬 탭 고정 및 브라우저 파비콘 강제 동기화 (원형 S 아이콘)
+if _b64_fav:
+    components.html(f"""
+    <script>
+        try {{
+            const head = window.parent.document.head;
+            const existingLinks = head.querySelectorAll("link[rel*='icon']");
+            existingLinks.forEach(el => el.remove());
+            
+            const newLink = window.parent.document.createElement('link');
+            newLink.type = 'image/png';
+            newLink.rel = 'icon';
+            newLink.href = 'data:image/png;base64,{_b64_fav}';
+            head.appendChild(newLink);
+            
+            const appleLink = window.parent.document.createElement('link');
+            appleLink.rel = 'apple-touch-icon';
+            appleLink.href = 'data:image/png;base64,{_b64_fav}';
+            head.appendChild(appleLink);
+        }} catch(e) {{
+            // Ignore in iframes if any
+        }}
+    </script>
+    """, height=0, width=0)
 
 # dahi-screener 스타일의 모던 카드형 UI CSS 주입
 st.markdown("""
