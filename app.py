@@ -12,6 +12,7 @@ import os
 import io
 import time
 import datetime
+import threading
 import pandas as pd
 import streamlit as st
 
@@ -337,19 +338,23 @@ st.markdown("""
         border: none !important;
         padding: 0 !important;
     }
-    div[data-testid="stForm"] div[data-testid="stHorizontalBlock"] {
+    div[data-testid="stForm"] div[data-testid="stHorizontalBlock"],
+    div[data-testid="stHorizontalBlock"] {
         align-items: flex-end !important;
     }
-    div[data-testid="stForm"] div[data-testid="stTextInput"] {
+    div[data-testid="stForm"] div[data-testid="stTextInput"],
+    div[data-testid="stTextInput"] {
         margin-bottom: 0 !important;
     }
     div[data-testid="stTextInput"] input {
         height: 42px !important;
     }
-    div[data-testid="stFormSubmitButton"] {
+    div[data-testid="stFormSubmitButton"],
+    div.stButton {
         margin-bottom: 0 !important;
     }
-    div[data-testid="stFormSubmitButton"] button {
+    div[data-testid="stFormSubmitButton"] button,
+    div.stButton > button {
         margin-bottom: 0 !important;
         height: 42px !important;
         min-height: 42px !important;
@@ -473,66 +478,159 @@ with tab_search:
     if search_mode == "이름 검색":
         st.markdown("##### 이름 검색")
         col_search_box, col_search_empty = st.columns([1, 2])
+        is_searching_name = st.session_state.get("is_searching_name", False)
+
         with col_search_box:
-            with st.form(key="realtime_search_form", clear_on_submit=False):
-                col_in, col_btn = st.columns([3, 1])
+            if is_searching_name:
+                col_in, col_btn, col_stop = st.columns([2.5, 1, 1], vertical_alignment="bottom")
                 with col_in:
-                    search_name_input = st.text_input(
+                    st.text_input(
                         "기자 이름",
                         value=st.session_state.get("active_search_name", ""),
                         placeholder="기자 이름 입력",
-                        label_visibility="collapsed"
+                        label_visibility="collapsed",
+                        disabled=True,
+                        key="search_name_dis"
                     )
                 with col_btn:
-                    search_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
-
-        if search_submitted:
-            name_clean = search_name_input.strip()
-            if name_clean:
-                with st.spinner("실시간 검색 중..."):
-                    nid = get_secret("naver_client_id", "")
-                    nsec = get_secret("naver_client_secret", "")
-                    res = OnlineNewsTracker.track_reporter_online(name_clean, client_id=nid, client_secret=nsec)
-                    st.session_state["upload_banner"] = res["message"]
-                    st.session_state["active_search_name"] = name_clean
-                    st.rerun()
+                    st.button("검색", type="primary", disabled=True, use_container_width=True, key="btn_name_searching")
+                with col_stop:
+                    if st.button("검색 중단", type="secondary", use_container_width=True, key="btn_stop_name"):
+                        st.session_state["is_searching_name"] = False
+                        if "stop_event_name" in st.session_state:
+                            st.session_state["stop_event_name"].set()
+                        st.session_state["upload_banner"] = "검색이 중단되었습니다."
+                        st.rerun()
             else:
-                st.warning("검색할 기자 이름을 입력해주세요.")
+                with st.form(key="realtime_search_form", clear_on_submit=False):
+                    col_in, col_btn = st.columns([3, 1], vertical_alignment="bottom")
+                    with col_in:
+                        search_name_input = st.text_input(
+                            "기자 이름",
+                            value=st.session_state.get("active_search_name", ""),
+                            placeholder="기자 이름 입력",
+                            label_visibility="collapsed"
+                        )
+                    with col_btn:
+                        search_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
+
+                if search_submitted:
+                    name_clean = search_name_input.strip()
+                    if name_clean:
+                        st.session_state["is_searching_name"] = True
+                        st.session_state["active_search_name"] = name_clean
+                        st.rerun()
+                    else:
+                        st.warning("검색할 기자 이름을 입력해주세요.")
+
+        if is_searching_name:
+            stop_event = threading.Event()
+            st.session_state["stop_event_name"] = stop_event
+            target_name = st.session_state.get("active_search_name", "")
+            with st.spinner("실시간 검색 중..."):
+                nid = get_secret("naver_client_id", "")
+                nsec = get_secret("naver_client_secret", "")
+                res_box = {}
+
+                def search_worker():
+                    try:
+                        res_box["res"] = OnlineNewsTracker.track_reporter_online(
+                            target_name, client_id=nid, client_secret=nsec, stop_event=stop_event
+                        )
+                    except Exception as e:
+                        res_box["error"] = str(e)
+
+                t = threading.Thread(target=search_worker)
+                t.start()
+
+                while t.is_alive():
+                    time.sleep(0.1)
+
+                st.session_state["is_searching_name"] = False
+                if not stop_event.is_set():
+                    res = res_box.get("res", {})
+                    st.session_state["upload_banner"] = res.get("message", "검색이 완료되었습니다.")
+                    st.session_state["active_search_name"] = target_name
+                    st.rerun()
 
     # 2. 매체 및 부서별 검색 (검색 버튼 포함, 50% 길이 축소)
     else:
         st.markdown("##### 매체 및 부서별 검색")
         col_form_half, col_empty_half = st.columns([1, 1])
+        is_searching_media = st.session_state.get("is_searching_media", False)
+
         with col_form_half:
-            with st.form(key="media_dept_search_form", clear_on_submit=False):
-                fcol1, fcol2, fcol3, fcol_btn = st.columns([3, 3, 3, 1.2], vertical_alignment="bottom")
+            if is_searching_media:
+                fcol1, fcol2, fcol3, fcol_btn, fcol_stop = st.columns([2.5, 2.5, 2.5, 1.1, 1.1], vertical_alignment="bottom")
                 with fcol1:
-                    media_input = st.text_input("매체명", value=st.session_state.get("filter_media_val", ""), key="f_media")
+                    st.text_input("매체명", value=st.session_state.get("filter_media_val", ""), key="f_media_dis", disabled=True)
                 with fcol2:
-                    dept_input = st.text_input("부서명", value=st.session_state.get("filter_dept_val", ""), key="f_dept")
+                    st.text_input("부서명", value=st.session_state.get("filter_dept_val", ""), key="f_dept_dis", disabled=True)
                 with fcol3:
-                    rank_input = st.text_input("직급명", value=st.session_state.get("filter_rank_val", ""), key="f_rank")
+                    st.text_input("직급명", value=st.session_state.get("filter_rank_val", ""), key="f_rank_dis", disabled=True)
                 with fcol_btn:
-                    filter_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
+                    st.button("검색", type="primary", disabled=True, use_container_width=True, key="btn_media_dis")
+                with fcol_stop:
+                    if st.button("검색 중단", type="secondary", use_container_width=True, key="btn_stop_media"):
+                        st.session_state["is_searching_media"] = False
+                        if "stop_event_media" in st.session_state:
+                            st.session_state["stop_event_media"].set()
+                        st.session_state["upload_banner"] = "검색이 중단되었습니다."
+                        st.rerun()
+            else:
+                with st.form(key="media_dept_search_form", clear_on_submit=False):
+                    fcol1, fcol2, fcol3, fcol_btn = st.columns([3, 3, 3, 1.2], vertical_alignment="bottom")
+                    with fcol1:
+                        media_input = st.text_input("매체명", value=st.session_state.get("filter_media_val", ""), key="f_media")
+                    with fcol2:
+                        dept_input = st.text_input("부서명", value=st.session_state.get("filter_dept_val", ""), key="f_dept")
+                    with fcol3:
+                        rank_input = st.text_input("직급명", value=st.session_state.get("filter_rank_val", ""), key="f_rank")
+                    with fcol_btn:
+                        filter_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
 
-        if filter_submitted:
-            m_clean = media_input.strip()
-            d_clean = dept_input.strip()
-            r_clean = rank_input.strip()
-            st.session_state["filter_media_val"] = m_clean
-            st.session_state["filter_dept_val"] = d_clean
-            st.session_state["filter_rank_val"] = r_clean
+                if filter_submitted:
+                    m_clean = media_input.strip()
+                    d_clean = dept_input.strip()
+                    r_clean = rank_input.strip()
+                    st.session_state["filter_media_val"] = m_clean
+                    st.session_state["filter_dept_val"] = d_clean
+                    st.session_state["filter_rank_val"] = r_clean
 
-            # 2번 요청: 매체/부서별 검색 시 실시간 온라인 기사에서 수집
-            if m_clean or d_clean or r_clean:
-                with st.spinner("실시간 검색 중..."):
-                    nid = get_secret("naver_client_id", "")
-                    nsec = get_secret("naver_client_secret", "")
-                    res = OnlineNewsTracker.track_media_dept_online(
-                        media=m_clean, dept=d_clean, rank=r_clean, client_id=nid, client_secret=nsec
-                    )
-                    st.session_state["upload_banner"] = res["message"]
-            st.rerun()
+                    if m_clean or d_clean or r_clean:
+                        st.session_state["is_searching_media"] = True
+                        st.rerun()
+
+        if is_searching_media:
+            stop_event_med = threading.Event()
+            st.session_state["stop_event_media"] = stop_event_med
+            m_val = st.session_state.get("filter_media_val", "")
+            d_val = st.session_state.get("filter_dept_val", "")
+            r_val = st.session_state.get("filter_rank_val", "")
+            with st.spinner("실시간 검색 중..."):
+                nid = get_secret("naver_client_id", "")
+                nsec = get_secret("naver_client_secret", "")
+                res_box_med = {}
+
+                def media_worker():
+                    try:
+                        res_box_med["res"] = OnlineNewsTracker.track_media_dept_online(
+                            media=m_val, dept=d_val, rank=r_val, client_id=nid, client_secret=nsec, stop_event=stop_event_med
+                        )
+                    except Exception as e:
+                        res_box_med["error"] = str(e)
+
+                tm = threading.Thread(target=media_worker)
+                tm.start()
+
+                while tm.is_alive():
+                    time.sleep(0.1)
+
+                st.session_state["is_searching_media"] = False
+                if not stop_event_med.is_set():
+                    res = res_box_med.get("res", {})
+                    st.session_state["upload_banner"] = res.get("message", "검색이 완료되었습니다.")
+                    st.rerun()
 
     all_reporters = db.get_all_reporters()
     selected_reporter_id = None

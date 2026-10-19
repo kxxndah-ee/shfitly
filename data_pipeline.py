@@ -1111,7 +1111,8 @@ class OnlineNewsTracker:
         cls, 
         reporter_name: str,
         client_id: str = "",
-        client_secret: str = ""
+        client_secret: str = "",
+        stop_event: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         특정 기자의 30개년(1995~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
@@ -1136,6 +1137,8 @@ class OnlineNewsTracker:
         article_count = 0
 
         for sy, ey in intervals:
+            if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                break
             queries = [
                 f'"{name}" [인사]',
                 f'"{name}" "<인사>"',
@@ -1143,6 +1146,8 @@ class OnlineNewsTracker:
             ]
 
             for q in queries:
+                if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                    break
                 arts = cls.search_online_articles(
                     q, 
                     max_items=8, 
@@ -1152,6 +1157,8 @@ class OnlineNewsTracker:
                     end_year=ey
                 )
                 for art in arts:
+                    if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                        break
                     # 1번 요청: 기사 제목이 [인사] 또는 <인사>인 인사기사만 엄격 필터링
                     if not is_personnel_article_title(art.get("title", "")):
                         continue
@@ -1185,16 +1192,24 @@ class OnlineNewsTracker:
                                 mr["email"] = fetched["email"]
                         all_records.extend(matched_recs)
 
+        is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
         if all_records:
             engine = PersonnelTrackerEngine()
             res = engine.process_records(all_records, append=True)
+            msg_suffix = " (중단 전까지 수집된 내역 반영)" if is_stopped else ""
             return {
                 "found_records": len(all_records),
                 "articles_searched": article_count,
                 "unique_reporters": res["unique_reporters"],
-                "message": f"30개년 공식 [인사]/<인사> 기사 {article_count}건을 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집하고 커리어 프로필을 구축했습니다!"
+                "message": f"30개년 공식 [인사]/<인사> 기사 {article_count}건을 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
+            if is_stopped:
+                return {
+                    "found_records": 0,
+                    "articles_searched": article_count,
+                    "message": "검색이 중단되었습니다."
+                }
             return {
                 "found_records": 0,
                 "articles_searched": article_count,
@@ -1208,7 +1223,8 @@ class OnlineNewsTracker:
         dept: str = "",
         rank: str = "",
         client_id: str = "",
-        client_secret: str = ""
+        client_secret: str = "",
+        stop_event: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         특정 매체명 및 부서명의 30개년 온라인 [인사]/<인사> 기사를 실시간 검색하여
@@ -1251,7 +1267,11 @@ class OnlineNewsTracker:
         article_count = 0
 
         for sy, ey in intervals:
+            if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                break
             for q in queries:
+                if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                    break
                 arts = cls.search_online_articles(
                     q, 
                     max_items=8, 
@@ -1261,6 +1281,8 @@ class OnlineNewsTracker:
                     end_year=ey
                 )
                 for art in arts:
+                    if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                        break
                     if not is_personnel_article_title(art.get("title", "")):
                         continue
                     u = art["url"]
@@ -1294,16 +1316,24 @@ class OnlineNewsTracker:
                             continue
                         all_records.append(r)
 
+        is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
         if all_records:
             engine = PersonnelTrackerEngine()
             res = engine.process_records(all_records, append=True)
+            msg_suffix = " (중단 전까지 수집된 내역 반영)" if is_stopped else ""
             return {
                 "found_records": len(all_records),
                 "articles_searched": article_count,
                 "unique_reporters": res["unique_reporters"],
-                "message": f"온라인 [인사]/<인사> 기사 {article_count}건에서 {len(all_records)}건의 발령 기록(언론인 {res['unique_reporters']}명)을 실시간 수집했습니다!"
+                "message": f"온라인 [인사]/<인사> 기사 {article_count}건에서 {len(all_records)}건의 발령 기록(언론인 {res['unique_reporters']}명)을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
+            if is_stopped:
+                return {
+                    "found_records": 0,
+                    "articles_searched": article_count,
+                    "message": "검색이 중단되었습니다."
+                }
             return {
                 "found_records": 0,
                 "articles_searched": article_count,
