@@ -889,7 +889,7 @@ class OnlineNewsTracker:
                         **cls.HEADERS
                     }
                     api_params = {"query": query, "display": min(max_items, 30), "sort": s_opt}
-                    api_resp = requests.get(api_url, headers=api_headers, params=api_params, timeout=5)
+                    api_resp = requests.get(api_url, headers=api_headers, params=api_params, timeout=5, verify=False)
                     if api_resp.status_code == 200:
                         api_data = api_resp.json()
                         for it in api_data.get("items", []):
@@ -930,12 +930,12 @@ class OnlineNewsTracker:
                 resp = requests.get(daum_url, headers=cls.HEADERS, timeout=6, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, "html.parser")
-                    for a in soup.find_all("a"):
-                        href = a.get("href", "")
+                    for a in soup.find_all("a", href=True):
+                        href = a["href"]
                         if "v.daum.net/v/" in href and href not in seen_urls:
                             seen_urls.add(href)
                             title = a.get_text(strip=True)
-                            if len(title) >= 5:
+                            if len(title) >= 3:
                                 # URL에서 즉시 날짜 추출
                                 d_match = re.search(r"v\.daum\.net/v/(\d{4})(\d{2})(\d{2})", href)
                                 d_text = f"{d_match.group(1)}-{d_match.group(2)}-{d_match.group(3)}" if d_match else ""
@@ -959,27 +959,25 @@ class OnlineNewsTracker:
                 resp = requests.get(naver_url, headers=cls.HEADERS, timeout=6, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, "html.parser")
-                    for a in soup.find_all("a", href=True):
-                        href = a["href"]
+                    for a in soup.select("a.news_tit, a.info, a[href*='news.naver.com'], a[href*='articleView'], a[href*='article']"):
+                        href = a.get("href", "")
                         title = a.get_text(strip=True)
-                        if len(title) < 5 or href in seen_urls:
+                        if not href or href.startswith("?") or href.startswith("javascript:") or href in seen_urls:
+                            continue
+                        if any(k in href for k in ["help.naver.com", "channelPromotion", "search.naver.com", "policy.naver.com"]):
+                            continue
+                        if len(title) < 3:
                             continue
 
-                        # 유효 기사 링크 판단 (네이버 뉴스 플랫폼 기사 및 언론사 원문)
-                        is_valid_news = (
-                            ("article" in href or "news" in href) and
-                            not any(k in href for k in ["help.naver.com", "channelPromotion", "search.naver.com", "policy.naver.com", "cr.naver.com", "javascript:"])
-                        )
-                        if is_valid_news:
-                            seen_urls.add(href)
-                            articles.append({
-                                "title": title,
-                                "url": href,
-                                "media": "온라인뉴스",
-                                "date_text": ""
-                            })
-                            if len(articles) >= max_items:
-                                break
+                        seen_urls.add(href)
+                        articles.append({
+                            "title": title,
+                            "url": href,
+                            "media": "온라인뉴스",
+                            "date_text": ""
+                        })
+                        if len(articles) >= max_items:
+                            break
             except Exception as e:
                 print(f"[Naver Search Error] {e}")
 
@@ -1108,83 +1106,101 @@ class OnlineNewsTracker:
         if not name:
             return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
 
-        # 30개년 커리어 추적을 위한 다각도 검색 쿼리 구성
-        queries = [
-            f'"{name}" [인사]',
-            f'"{name}" 인사',
-            f'"{name}" 승진 OR 전보 OR 부장 OR 차장 OR 국장',
-            f'"{name} 기자"',
-            f'"{name}" 기자',
-            f'"{name}" 특파원 OR 논설위원 OR 에디터 OR 부국장'
+        # 30개년(1995~2026) 연대기 추적을 위한 연도별 구간(Multi-window) 분할 탐색
+        intervals = [
+            (2024, 2026),  # 최근 발령 및 활동
+            (2020, 2023),  # 3~6개년 전 (승진/보직)
+            (2016, 2019),  # 7~10개년 전 (부서 이동)
+            (2011, 2015),  # 11~15개년 전 (중기 이력)
+            (2005, 2010),  # 16~21개년 전 (초기 소속사/이직)
+            (1995, 2004)   # 22~30개년 전 (입사 초기)
         ]
+
         all_records = []
         searched_urls = set()
         article_count = 0
 
-        for q in queries:
-            arts = cls.search_online_articles(q, max_items=12, client_id=client_id, client_secret=client_secret, start_year=1995, end_year=2026)
-            for art in arts:
-                u = art["url"]
-                if u in searched_urls:
-                    continue
-                searched_urls.add(u)
-                article_count += 1
+        for sy, ey in intervals:
+            queries = [
+                f'"{name}" [인사]',
+                f'"{name}" 인사',
+                f'"{name}" 기자'
+            ]
+            if sy >= 2016:
+                queries.append(f'"{name}" 승진 OR 전보 OR 부장 OR 차장 OR 국장')
+                queries.append(f'"{name}" 특파원 OR 논설위원 OR 에디터 OR 팀장')
 
-                fetched = cls.fetch_full_text(u)
-                body = fetched["text"]
-                if not body or len(body) < 30:
-                    continue
-
-                media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
-                article_pub_date = fetched.get("pub_date") or art.get("date_text") or str(datetime.date.today())
-
-                # 1순위: 인사 발령문 파싱
-                recs = PersonnelRegexParser.parse_article_text(
-                    article_text=body,
-                    default_media=media,
-                    article_title=art["title"],
-                    pub_date=article_pub_date,
-                    article_url=u
+            for q in queries:
+                arts = cls.search_online_articles(
+                    q, 
+                    max_items=8, 
+                    client_id=client_id, 
+                    client_secret=client_secret, 
+                    start_year=sy, 
+                    end_year=ey
                 )
-                matched_recs = [r for r in recs if r["name"] == name]
-                if matched_recs:
-                    for mr in matched_recs:
-                        if fetched["email"] and not mr.get("email"):
-                            mr["email"] = fetched["email"]
-                    all_records.extend(matched_recs)
-                else:
-                    # 2순위: 기자 바이라인 기사 파싱 (이름이 기자로 활동 중인 경우)
-                    if (f"{name} 기자" in body or f"{name}기자" in body or 
-                        f"{name} 특파원" in body or f"{name} 논설" in body or
-                        f"{name} 기자" in art["title"] or f"{name}기자" in art["title"]):
+                for art in arts:
+                    u = art["url"]
+                    if u in searched_urls:
+                        continue
+                    searched_urls.add(u)
+                    article_count += 1
 
-                        # 부서 추정
-                        dept = "편집국"
-                        dept_keywords = [
-                            "건설부동산부", "부동산부", "정치부", "사회부", "경제부", "산업부", "금융부", 
-                            "IT부", "문화부", "국제부", "전국부", "디지털부", "증권부", "유통부"
-                        ]
-                        for kw in dept_keywords:
-                            if kw in body[:500] or kw in art["title"]:
-                                dept = kw
-                                break
+                    fetched = cls.fetch_full_text(u)
+                    body = fetched["text"]
+                    if not body or len(body) < 30:
+                        continue
 
-                        domain = classify_domain(dept)
-                        all_records.append({
-                            "name": name,
-                            "media": normalize_media_name(media),
-                            "dept": dept,
-                            "domain": domain,
-                            "rank_title": "기자",
-                            "rank_level": 3,
-                            "pub_date": article_pub_date,
-                            "action_type": "보임",
-                            "source_type": "online_byline",
-                            "article_title": art["title"],
-                            "article_url": u,
-                            "email": fetched["email"] or "",
-                            "raw_text": f"온라인 기사 바이라인 확인: {art['title']}"
-                        })
+                    media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
+                    article_pub_date = fetched.get("pub_date") or art.get("date_text") or f"{sy}-06-30"
+
+                    # 1순위: 인사 발령문 파싱
+                    recs = PersonnelRegexParser.parse_article_text(
+                        article_text=body,
+                        default_media=media,
+                        article_title=art["title"],
+                        pub_date=article_pub_date,
+                        article_url=u
+                    )
+                    matched_recs = [r for r in recs if r["name"] == name]
+                    if matched_recs:
+                        for mr in matched_recs:
+                            if fetched["email"] and not mr.get("email"):
+                                mr["email"] = fetched["email"]
+                        all_records.extend(matched_recs)
+                    else:
+                        # 2순위: 기자 바이라인 기사 파싱 (이름이 기자로 활동 중인 경우)
+                        if (f"{name} 기자" in body or f"{name}기자" in body or 
+                            f"{name} 특파원" in body or f"{name} 논설" in body or
+                            f"{name} 기자" in art["title"] or f"{name}기자" in art["title"]):
+
+                            # 부서 추정
+                            dept = "편집국"
+                            dept_keywords = [
+                                "건설부동산부", "부동산부", "정치부", "사회부", "경제부", "산업부", "금융부", 
+                                "IT부", "문화부", "국제부", "전국부", "디지털부", "증권부", "유통부", "바이오부"
+                            ]
+                            for kw in dept_keywords:
+                                if kw in body[:500] or kw in art["title"]:
+                                    dept = kw
+                                    break
+
+                            domain = classify_domain(dept)
+                            all_records.append({
+                                "name": name,
+                                "media": normalize_media_name(media),
+                                "dept": dept,
+                                "domain": domain,
+                                "rank_title": "기자",
+                                "rank_level": 3,
+                                "pub_date": article_pub_date,
+                                "action_type": "보임",
+                                "source_type": "online_byline",
+                                "article_title": art["title"],
+                                "article_url": u,
+                                "email": fetched["email"] or "",
+                                "raw_text": f"온라인 기사 바이라인 확인: {art['title']}"
+                            })
 
         if all_records:
             engine = PersonnelTrackerEngine()

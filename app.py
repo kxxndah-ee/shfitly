@@ -429,22 +429,19 @@ tab_search, tab_jobchanges, tab_analytics, tab_data = st.tabs([
 # TAB 1: 검색
 # =========================================================================
 with tab_search:
-    # 검색창 길이 1/3 축소 및 상단 '검색' 텍스트 삭제
-    col_search_box, col_gap, col_quick_btn = st.columns([1, 1, 1])
-    with col_search_box:
-        with st.form(key="realtime_search_form", clear_on_submit=False):
-            col_in, col_btn = st.columns([3, 1])
-            with col_in:
-                search_name_input = st.text_input(
-                    "기자 이름",
-                    value=st.session_state.get("active_search_name", ""),
-                    placeholder="기자 이름 입력",
-                    label_visibility="collapsed"
-                )
-            with col_btn:
-                search_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
-
+    # 3. 검색 모드 선택 (이름 검색 vs 매체 및 부서별 검색)
+    col_mode, col_quick_btn = st.columns([3, 1])
+    with col_mode:
+        search_mode = st.radio(
+            "검색 모드 선택",
+            options=["이름 검색", "매체 및 부서별 검색"],
+            horizontal=True,
+            index=0 if st.session_state.get("search_mode_selection", "이름 검색") == "이름 검색" else 1,
+            key="search_mode_radio"
+        )
+        st.session_state["search_mode_selection"] = search_mode
     with col_quick_btn:
+        st.write("")
         if st.button("최신 발령 실시간 수집", use_container_width=True, type="secondary", help="인터넷 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
             with st.spinner("온라인 포털에서 최신 인사 기사 전문을 수집 및 분석 중..."):
                 nid = get_secret("naver_client_id", "")
@@ -453,41 +450,74 @@ with tab_search:
                 st.session_state["upload_banner"] = res["message"]
                 st.rerun()
 
-    if search_submitted:
-        name_clean = search_name_input.strip()
-        if name_clean:
-            with st.spinner(f"포털 온라인 뉴스에서 '{name_clean}' 기자의 최신 기사 및 발령문을 실시간 검색 중..."):
-                nid = get_secret("naver_client_id", "")
-                nsec = get_secret("naver_client_secret", "")
-                res = OnlineNewsTracker.track_reporter_online(name_clean, client_id=nid, client_secret=nsec)
-                st.session_state["upload_banner"] = res["message"]
-                st.session_state["active_search_name"] = name_clean
-                st.rerun()
-        else:
-            st.warning("검색할 기자 이름을 입력해주세요.")
+    # 1. 이름 검색 (폰트 및 사이즈는 매체 및 부서별 검색과 동일)
+    if search_mode == "이름 검색":
+        st.markdown("##### 이름 검색")
+        col_search_box, col_search_empty = st.columns([1, 2])
+        with col_search_box:
+            with st.form(key="realtime_search_form", clear_on_submit=False):
+                col_in, col_btn = st.columns([3, 1])
+                with col_in:
+                    search_name_input = st.text_input(
+                        "기자 이름",
+                        value=st.session_state.get("active_search_name", ""),
+                        placeholder="기자 이름 입력",
+                        label_visibility="collapsed"
+                    )
+                with col_btn:
+                    search_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
 
-    # 8. 매체 및 부서별 필터 검색 (등록된 언론인 목록 위로 위치 이동 및 항상 펼침, 예시 삭제, 괄호/영어 삭제)
-    st.markdown("##### 매체 및 부서별 필터")
-    fcol1, fcol2, fcol3 = st.columns(3)
-    with fcol1:
-        media_input = st.text_input("매체명", key="f_media")
-    with fcol2:
-        dept_input = st.text_input("부서명", key="f_dept")
-    with fcol3:
-        rank_input = st.text_input("직급명", key="f_rank")
+        if search_submitted:
+            name_clean = search_name_input.strip()
+            if name_clean:
+                with st.spinner(f"포털 온라인 뉴스에서 '{name_clean}' 기자의 30개년 기사 및 발령문을 실시간 검색 중..."):
+                    nid = get_secret("naver_client_id", "")
+                    nsec = get_secret("naver_client_secret", "")
+                    res = OnlineNewsTracker.track_reporter_online(name_clean, client_id=nid, client_secret=nsec)
+                    st.session_state["upload_banner"] = res["message"]
+                    st.session_state["active_search_name"] = name_clean
+                    st.rerun()
+            else:
+                st.warning("검색할 기자 이름을 입력해주세요.")
+
+    # 2. 매체 및 부서별 검색 (검색 버튼 포함)
+    else:
+        st.markdown("##### 매체 및 부서별 검색")
+        with st.form(key="media_dept_search_form", clear_on_submit=False):
+            fcol1, fcol2, fcol3, fcol_btn = st.columns([3, 3, 3, 1])
+            with fcol1:
+                media_input = st.text_input("매체명", value=st.session_state.get("filter_media_val", ""), key="f_media")
+            with fcol2:
+                dept_input = st.text_input("부서명", value=st.session_state.get("filter_dept_val", ""), key="f_dept")
+            with fcol3:
+                rank_input = st.text_input("직급명", value=st.session_state.get("filter_rank_val", ""), key="f_rank")
+            with fcol_btn:
+                st.write("")
+                filter_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
+
+        if filter_submitted:
+            st.session_state["filter_media_val"] = media_input.strip()
+            st.session_state["filter_dept_val"] = dept_input.strip()
+            st.session_state["filter_rank_val"] = rank_input.strip()
+            st.rerun()
 
     all_reporters = db.get_all_reporters()
-    active_name = st.session_state.get("active_search_name", search_name_input.strip())
     selected_reporter_id = None
 
-    filtered_reporters = all_reporters
-    if media_input or dept_input or rank_input:
-        filter_results = db.search_reporters(media=media_input, dept=dept_input, rank=rank_input)
-        if filter_results:
-            filtered_reporters = filter_results
+    if search_mode == "이름 검색":
+        active_name = st.session_state.get("active_search_name", "")
+        filtered_reporters = all_reporters
+    else:
+        active_name = ""
+        m_val = st.session_state.get("filter_media_val", "")
+        d_val = st.session_state.get("filter_dept_val", "")
+        r_val = st.session_state.get("filter_rank_val", "")
+        if m_val or d_val or r_val:
+            filtered_reporters = db.search_reporters(media=m_val, dept=d_val, rank=r_val)
+            if not filtered_reporters:
+                st.info("조건에 부합하는 언론인 기록이 없습니다.")
         else:
-            filtered_reporters = []
-            st.info("조건에 부합하는 언론인 기록이 없습니다.")
+            filtered_reporters = all_reporters
 
     # 등록된 언론인 목록 / 인물 선택
     if active_name:
