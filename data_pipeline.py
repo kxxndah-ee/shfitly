@@ -195,6 +195,14 @@ def parse_rank_level(rank_title: str) -> int:
     return best_level
 
 
+def is_personnel_article_title(title: str) -> bool:
+    """기사 제목이 [인사] 또는 <인사> (및 대괄호/화살괄호 변형)인 공식 인사 기사인지 엄격 검증."""
+    if not title:
+        return False
+    t = str(title).replace(" ", "")
+    return ("[인사]" in t) or ("<인사>" in t) or ("【인사】" in t) or ("(인사)" in t)
+
+
 # ==========================================
 # 2. 한국 언론사 인사 기사 전용 정규표현식 파서
 # ==========================================
@@ -1108,7 +1116,7 @@ class OnlineNewsTracker:
 
         # 30개년(1995~2026) 연대기 추적을 위한 연도별 구간(Multi-window) 분할 탐색
         intervals = [
-            (2024, 2026),  # 최근 발령 및 활동
+            (2024, 2026),  # 최근 발령
             (2020, 2023),  # 3~6개년 전 (승진/보직)
             (2016, 2019),  # 7~10개년 전 (부서 이동)
             (2011, 2015),  # 11~15개년 전 (중기 이력)
@@ -1123,12 +1131,9 @@ class OnlineNewsTracker:
         for sy, ey in intervals:
             queries = [
                 f'"{name}" [인사]',
-                f'"{name}" 인사',
-                f'"{name}" 기자'
+                f'"{name}" "<인사>"',
+                f'"{name}" 인사'
             ]
-            if sy >= 2016:
-                queries.append(f'"{name}" 승진 OR 전보 OR 부장 OR 차장 OR 국장')
-                queries.append(f'"{name}" 특파원 OR 논설위원 OR 에디터 OR 팀장')
 
             for q in queries:
                 arts = cls.search_online_articles(
@@ -1140,6 +1145,10 @@ class OnlineNewsTracker:
                     end_year=ey
                 )
                 for art in arts:
+                    # 1번 요청: 기사 제목이 [인사] 또는 <인사>인 인사기사만 엄격 필터링
+                    if not is_personnel_article_title(art.get("title", "")):
+                        continue
+
                     u = art["url"]
                     if u in searched_urls:
                         continue
@@ -1154,7 +1163,7 @@ class OnlineNewsTracker:
                     media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
                     article_pub_date = fetched.get("pub_date") or art.get("date_text") or f"{sy}-06-30"
 
-                    # 1순위: 인사 발령문 파싱
+                    # 인사 발령문 파싱
                     recs = PersonnelRegexParser.parse_article_text(
                         article_text=body,
                         default_media=media,
@@ -1168,39 +1177,6 @@ class OnlineNewsTracker:
                             if fetched["email"] and not mr.get("email"):
                                 mr["email"] = fetched["email"]
                         all_records.extend(matched_recs)
-                    else:
-                        # 2순위: 기자 바이라인 기사 파싱 (이름이 기자로 활동 중인 경우)
-                        if (f"{name} 기자" in body or f"{name}기자" in body or 
-                            f"{name} 특파원" in body or f"{name} 논설" in body or
-                            f"{name} 기자" in art["title"] or f"{name}기자" in art["title"]):
-
-                            # 부서 추정
-                            dept = "편집국"
-                            dept_keywords = [
-                                "건설부동산부", "부동산부", "정치부", "사회부", "경제부", "산업부", "금융부", 
-                                "IT부", "문화부", "국제부", "전국부", "디지털부", "증권부", "유통부", "바이오부"
-                            ]
-                            for kw in dept_keywords:
-                                if kw in body[:500] or kw in art["title"]:
-                                    dept = kw
-                                    break
-
-                            domain = classify_domain(dept)
-                            all_records.append({
-                                "name": name,
-                                "media": normalize_media_name(media),
-                                "dept": dept,
-                                "domain": domain,
-                                "rank_title": "기자",
-                                "rank_level": 3,
-                                "pub_date": article_pub_date,
-                                "action_type": "보임",
-                                "source_type": "online_byline",
-                                "article_title": art["title"],
-                                "article_url": u,
-                                "email": fetched["email"] or "",
-                                "raw_text": f"온라인 기사 바이라인 확인: {art['title']}"
-                            })
 
         if all_records:
             engine = PersonnelTrackerEngine()
@@ -1209,13 +1185,122 @@ class OnlineNewsTracker:
                 "found_records": len(all_records),
                 "articles_searched": article_count,
                 "unique_reporters": res["unique_reporters"],
-                "message": f"30개년 온라인 기사 {article_count}건을 탐색·분석하여 '{name}' 기자의 발령 및 활동 기록 {len(all_records)}건을 실시간 수집하고 커리어 프로필을 구축했습니다!"
+                "message": f"30개년 공식 [인사]/<인사> 기사 {article_count}건을 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집하고 커리어 프로필을 구축했습니다!"
             }
         else:
             return {
                 "found_records": 0,
                 "articles_searched": article_count,
-                "message": f"30개년 온라인 기사 {article_count}건을 탐색했으나 '{name}' 기자의 발령문 또는 최근 기사를 찾지 못했습니다."
+                "message": f"30개년 온라인 기사를 탐색했으나 제목에 [인사] 또는 <인사>가 포함된 기사에서 '{name}' 기자의 발령 기록을 찾지 못했습니다."
+            }
+
+    @classmethod
+    def track_media_dept_online(
+        cls,
+        media: str = "",
+        dept: str = "",
+        rank: str = "",
+        client_id: str = "",
+        client_secret: str = ""
+    ) -> Dict[str, Any]:
+        """
+        특정 매체명 및 부서명의 30개년 온라인 [인사]/<인사> 기사를 실시간 검색하여
+        발령 레코드와 언론인 명단을 수집하고 DB에 등록합니다.
+        """
+        media_clean = media.strip()
+        dept_clean = dept.strip()
+        rank_clean = rank.strip()
+
+        # 검색 쿼리 구성 ([인사] 및 <인사> 기사 대상)
+        query_parts = []
+        if media_clean:
+            query_parts.append(f'"{media_clean}"')
+        if dept_clean:
+            query_parts.append(f'"{dept_clean}"')
+        if rank_clean:
+            query_parts.append(f'"{rank_clean}"')
+
+        if not query_parts:
+            query_parts = ["[인사]"]
+
+        main_kw = " ".join(query_parts)
+        queries = [
+            f'[인사] {main_kw}',
+            f'<인사> {main_kw}',
+            f'"{main_kw}" 인사'
+        ]
+
+        intervals = [
+            (2024, 2026),
+            (2020, 2023),
+            (2016, 2019),
+            (2011, 2015),
+            (2005, 2010),
+            (1995, 2004)
+        ]
+
+        all_records = []
+        searched_urls = set()
+        article_count = 0
+
+        for sy, ey in intervals:
+            for q in queries:
+                arts = cls.search_online_articles(
+                    q, 
+                    max_items=8, 
+                    client_id=client_id, 
+                    client_secret=client_secret, 
+                    start_year=sy, 
+                    end_year=ey
+                )
+                for art in arts:
+                    if not is_personnel_article_title(art.get("title", "")):
+                        continue
+                    u = art["url"]
+                    if u in searched_urls:
+                        continue
+                    searched_urls.add(u)
+                    article_count += 1
+
+                    fetched = cls.fetch_full_text(u)
+                    body = fetched.get("text", "")
+                    if not body or len(body) < 30:
+                        continue
+
+                    art_media = fetched.get("media") if fetched.get("media") != "온라인뉴스" else (media_clean or art.get("media"))
+                    pub_date = fetched.get("pub_date") or art.get("date_text") or f"{sy}-06-30"
+
+                    recs = PersonnelRegexParser.parse_article_text(
+                        article_text=body,
+                        default_media=art_media,
+                        article_title=art["title"],
+                        pub_date=pub_date,
+                        article_url=u
+                    )
+                    for r in recs:
+                        if media_clean and media_clean not in r.get("media", ""):
+                            if media_clean in art["title"]:
+                                r["media"] = normalize_media_name(media_clean)
+                        if dept_clean and dept_clean not in r.get("dept", ""):
+                            continue
+                        if rank_clean and rank_clean not in r.get("rank_title", ""):
+                            continue
+                        all_records.append(r)
+
+        if all_records:
+            engine = PersonnelTrackerEngine()
+            res = engine.process_records(all_records, append=True)
+            return {
+                "found_records": len(all_records),
+                "articles_searched": article_count,
+                "unique_reporters": res["unique_reporters"],
+                "message": f"온라인 [인사]/<인사> 기사 {article_count}건에서 {len(all_records)}건의 발령 기록(언론인 {res['unique_reporters']}명)을 실시간 수집했습니다!"
+            }
+        else:
+            return {
+                "found_records": 0,
+                "articles_searched": article_count,
+                "message": f"온라인 인사 기사 {article_count}건을 탐색했으나 해당 조건의 발령 기록을 찾지 못했습니다."
             }
 
     @classmethod
@@ -1550,22 +1635,48 @@ class MediaDatabase:
     def search_reporters(self, name: str = "", media: str = "", dept: str = "", rank: str = "") -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            query = "SELECT DISTINCT r.* FROM reporters r JOIN personnel_records pr ON r.reporter_id = pr.reporter_id WHERE 1=1"
+            query = """
+                SELECT DISTINCT r.* FROM reporters r
+                LEFT JOIN personnel_records pr ON r.reporter_id = pr.reporter_id
+                WHERE 1=1
+            """
             params = []
             if name:
                 query += " AND r.name LIKE ?"
                 params.append(f"%{name}%")
             if media:
-                query += " AND pr.media LIKE ?"
-                params.append(f"%{media}%")
+                query += " AND (pr.media LIKE ? OR r.current_media LIKE ?)"
+                params.extend([f"%{media}%", f"%{media}%"])
             if dept:
-                query += " AND pr.dept LIKE ?"
-                params.append(f"%{dept}%")
+                query += " AND (pr.dept LIKE ? OR r.current_dept LIKE ?)"
+                params.extend([f"%{dept}%", f"%{dept}%"])
             if rank:
-                query += " AND pr.rank_title LIKE ?"
-                params.append(f"%{rank}%")
+                query += " AND (pr.rank_title LIKE ? OR r.current_rank LIKE ?)"
+                params.extend([f"%{rank}%", f"%{rank}%"])
 
             query += " ORDER BY r.last_seen DESC"
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def search_records(self, name: str = "", media: str = "", dept: str = "", rank: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = "SELECT * FROM personnel_records WHERE 1=1"
+            params = []
+            if name:
+                query += " AND name LIKE ?"
+                params.append(f"%{name}%")
+            if media:
+                query += " AND media LIKE ?"
+                params.append(f"%{media}%")
+            if dept:
+                query += " AND dept LIKE ?"
+                params.append(f"%{dept}%")
+            if rank:
+                query += " AND rank_title LIKE ?"
+                params.append(f"%{rank}%")
+            query += " ORDER BY pub_date DESC, id DESC LIMIT ?"
+            params.append(limit)
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
 

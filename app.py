@@ -493,24 +493,40 @@ with tab_search:
             else:
                 st.warning("검색할 기자 이름을 입력해주세요.")
 
-    # 2. 매체 및 부서별 검색 (검색 버튼 포함)
+    # 2. 매체 및 부서별 검색 (검색 버튼 포함, 50% 길이 축소)
     else:
         st.markdown("##### 매체 및 부서별 검색")
-        with st.form(key="media_dept_search_form", clear_on_submit=False):
-            fcol1, fcol2, fcol3, fcol_btn = st.columns([3, 3, 3, 1], vertical_alignment="bottom")
-            with fcol1:
-                media_input = st.text_input("매체명", value=st.session_state.get("filter_media_val", ""), key="f_media")
-            with fcol2:
-                dept_input = st.text_input("부서명", value=st.session_state.get("filter_dept_val", ""), key="f_dept")
-            with fcol3:
-                rank_input = st.text_input("직급명", value=st.session_state.get("filter_rank_val", ""), key="f_rank")
-            with fcol_btn:
-                filter_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
+        col_form_half, col_empty_half = st.columns([1, 1])
+        with col_form_half:
+            with st.form(key="media_dept_search_form", clear_on_submit=False):
+                fcol1, fcol2, fcol3, fcol_btn = st.columns([3, 3, 3, 1.2], vertical_alignment="bottom")
+                with fcol1:
+                    media_input = st.text_input("매체명", value=st.session_state.get("filter_media_val", ""), key="f_media")
+                with fcol2:
+                    dept_input = st.text_input("부서명", value=st.session_state.get("filter_dept_val", ""), key="f_dept")
+                with fcol3:
+                    rank_input = st.text_input("직급명", value=st.session_state.get("filter_rank_val", ""), key="f_rank")
+                with fcol_btn:
+                    filter_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
 
         if filter_submitted:
-            st.session_state["filter_media_val"] = media_input.strip()
-            st.session_state["filter_dept_val"] = dept_input.strip()
-            st.session_state["filter_rank_val"] = rank_input.strip()
+            m_clean = media_input.strip()
+            d_clean = dept_input.strip()
+            r_clean = rank_input.strip()
+            st.session_state["filter_media_val"] = m_clean
+            st.session_state["filter_dept_val"] = d_clean
+            st.session_state["filter_rank_val"] = r_clean
+
+            # 2번 요청: 매체/부서별 검색 시 실시간 온라인 기사에서 수집
+            if m_clean or d_clean or r_clean:
+                search_terms = " ".join([t for t in [m_clean, d_clean, r_clean] if t])
+                with st.spinner(f"포털 온라인 뉴스에서 '{search_terms}' 관련 [인사]/<인사> 기사를 실시간 탐색 및 분석 중..."):
+                    nid = get_secret("naver_client_id", "")
+                    nsec = get_secret("naver_client_secret", "")
+                    res = OnlineNewsTracker.track_media_dept_online(
+                        media=m_clean, dept=d_clean, rank=r_clean, client_id=nid, client_secret=nsec
+                    )
+                    st.session_state["upload_banner"] = res["message"]
             st.rerun()
 
     all_reporters = db.get_all_reporters()
@@ -519,6 +535,7 @@ with tab_search:
     if search_mode == "이름 검색":
         active_name = st.session_state.get("active_search_name", "")
         filtered_reporters = all_reporters
+        matched_records = []
     else:
         active_name = ""
         m_val = st.session_state.get("filter_media_val", "")
@@ -526,10 +543,10 @@ with tab_search:
         r_val = st.session_state.get("filter_rank_val", "")
         if m_val or d_val or r_val:
             filtered_reporters = db.search_reporters(media=m_val, dept=d_val, rank=r_val)
-            if not filtered_reporters:
-                st.info("조건에 부합하는 언론인 기록이 없습니다.")
+            matched_records = db.search_records(media=m_val, dept=d_val, rank=r_val)
         else:
             filtered_reporters = all_reporters
+            matched_records = []
 
     # 등록된 언론인 목록 / 인물 선택
     if active_name:
@@ -545,14 +562,30 @@ with tab_search:
             else:
                 selected_reporter_id = matched_reporters[0]["reporter_id"]
         else:
-            st.info(f"온라인 기사에서 '{active_name}' 기자의 발령문 또는 최근 기사를 찾지 못했습니다. 다른 이름으로 검색해보세요.")
+            st.info(f"온라인 [인사]/<인사> 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다. 다른 이름으로 검색해보세요.")
     elif filtered_reporters:
         options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
         selected_label = st.selectbox(
-            f"등록된 언론인 목록 : 총 {len(filtered_reporters)}명",
+            f"인물 선택 : 검색된 언론인 {len(filtered_reporters)}명",
             options=list(options_dict.keys())
         )
         selected_reporter_id = options_dict[selected_label]
+
+        # 매체/부서별 검색 결과인 경우 발령 명단 테이블 추가 표시
+        if search_mode == "매체 및 부서별 검색" and matched_records:
+            st.markdown("##### 발령 명단")
+            df_display = pd.DataFrame([{
+                "발령일자": r.get("pub_date", ""),
+                "언론사": r.get("media", ""),
+                "부서": r.get("dept", ""),
+                "직급": r.get("rank_title", ""),
+                "성명": r.get("name", ""),
+                "발령구분": r.get("action_type", ""),
+                "기사제목": r.get("article_title", "")
+            } for r in matched_records[:50]])
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+    elif search_mode == "매체 및 부서별 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val")):
+        st.info("조건에 부합하는 언론인 기록이 없습니다. 매체명이나 부서명을 다시 확인해주세요.")
 
     # 선택된 기자의 상세 프로필 및 타임라인 렌더링
     if selected_reporter_id:
