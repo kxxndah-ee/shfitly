@@ -798,7 +798,7 @@ class OnlineNewsTracker:
     """
     네이버/다음/구글 뉴스 온라인 기사를 실시간 수집 및 스크래핑하여,
     인사 발령 기사 및 기자 바이라인을 자동 분석하고 DB에 즉시 등록하는 온라인 트래커.
-    최근 20개년(2005~2026)의 포털 기사를 실시간 탐색하여 연대기 커리어 프로필을 구축합니다.
+    최근 30개년(1995~2026)의 포털 기사를 실시간 탐색하여 연대기 커리어 프로필을 구축합니다.
     """
 
     HEADERS = {
@@ -820,7 +820,7 @@ class OnlineNewsTracker:
             if dt_val and len(dt_val) >= 10:
                 return dt_val[:10]
             t_text = naver_date.get_text(strip=True)
-            m = re.search(r"(20\d{2})[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", t_text)
+            m = re.search(r"(199[0-9]|20[0-2][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", t_text)
             if m:
                 return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
@@ -829,25 +829,25 @@ class OnlineNewsTracker:
             meta = soup.select_one(f"meta[property='{meta_name}'], meta[name='{meta_name}']")
             if meta and meta.get("content"):
                 c = meta["content"]
-                m = re.search(r"(20\d{2})[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", c)
+                m = re.search(r"(199[0-9]|20[0-2][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", c)
                 if m:
                     return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
         # 4. 언론사 공통 날짜 표시 태그 (.txt_info, .num_date, .info_view, .date)
         for tag in soup.select(".txt_info, .num_date, .info_view, .date, .byline_date, .article_info"):
             text = tag.get_text(strip=True)
-            m = re.search(r"(200[5-9]|201[0-9]|202[0-6])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", text)
+            m = re.search(r"(199[0-9]|20[0-2][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", text)
             if m:
                 return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
         # 5. 본문 시작부 1,200자 내의 정규식 탐색
         if raw_text:
-            m = re.search(r"(200[5-9]|201[0-9]|202[0-6])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", raw_text[:1200])
+            m = re.search(r"(199[0-9]|20[0-2][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", raw_text[:1200])
             if m:
                 return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
         # 6. 일반 URL 경로 내의 날짜 (/2018/05/23/ 등)
-        url_m = re.search(r"/(200[5-9]|201[0-9]|202[0-6])/?(\d{2})/?(\d{2})", url)
+        url_m = re.search(r"/(199[0-9]|20[0-2][0-9])/?(\d{2})/?(\d{2})", url)
         if url_m:
             return f"{url_m.group(1)}-{url_m.group(2)}-{url_m.group(3)}"
 
@@ -860,12 +860,12 @@ class OnlineNewsTracker:
         max_items: int = 25,
         client_id: str = "",
         client_secret: str = "",
-        start_year: int = 2005,
+        start_year: int = 1995,
         end_year: int = 2026
     ) -> List[Dict[str, Any]]:
         """
-        포털(다음·네이버·구글 뉴스 RSS) 및 네이버 공식 검색 API를 통해 20개년(2005~2026) 기사 목록을 수집합니다.
-        네이버 API 키가 없어도 20개년 웹 검색 엔진이 100% 정상 작동합니다.
+        포털(다음·네이버·구글 뉴스 RSS) 및 네이버 공식 검색 API를 통해 30개년(1995~2026) 기사 목록을 수집합니다.
+        네이버 API 키가 없어도 30개년 웹 검색 엔진이 100% 정상 작동합니다.
         """
         encoded_query = quote(query)
         articles = []
@@ -916,7 +916,7 @@ class OnlineNewsTracker:
                 except Exception as e:
                     print(f"[Naver API Search Error] {e}")
 
-        # 1. 다음 뉴스 검색 (20개년 관련도순 + 최신순)
+        # 1. 다음 뉴스 검색 (30개년 관련도순 + 최신순)
         for daum_sort in ["accuracy", "recency"]:
             if len(articles) >= max_items:
                 break
@@ -945,7 +945,7 @@ class OnlineNewsTracker:
             except Exception as e:
                 print(f"[Daum Search Error] {e}")
 
-        # 2. 네이버 뉴스 웹 검색 (20개년 관련도순[sort=0] + 최신순[sort=1])
+        # 2. 네이버 뉴스 웹 검색 (30개년 관련도순[sort=0] + 최신순[sort=1])
         for n_sort, n_so in [("0", "so:r"), ("1", "so:dd")]:
             if len(articles) >= max_items:
                 break
@@ -1075,7 +1075,7 @@ class OnlineNewsTracker:
 
                 result["text"] = full_text
 
-                # 실제 기사 발행 일자 추출 (20개년 연대기 타임라인 핵심)
+                # 실제 기사 발행 일자 추출 (30개년 연대기 타임라인 핵심)
                 result["pub_date"] = cls.extract_pub_date(url, soup, full_text)
 
                 # 이메일 추출
@@ -1096,14 +1096,14 @@ class OnlineNewsTracker:
         client_secret: str = ""
     ) -> Dict[str, Any]:
         """
-        특정 기자의 20개년(2005~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
+        특정 기자의 30개년(1995~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
         소속 언론사, 직급/부서, 이메일, 연대기 타임라인을 파싱하고 DB에 등록합니다.
         """
         name = reporter_name.strip()
         if not name:
             return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
 
-        # 20개년 커리어 추적을 위한 다각도 검색 쿼리 구성
+        # 30개년 커리어 추적을 위한 다각도 검색 쿼리 구성
         queries = [
             f'"{name}" [인사]',
             f'"{name}" 인사',
@@ -1117,7 +1117,7 @@ class OnlineNewsTracker:
         article_count = 0
 
         for q in queries:
-            arts = cls.search_online_articles(q, max_items=12, client_id=client_id, client_secret=client_secret)
+            arts = cls.search_online_articles(q, max_items=12, client_id=client_id, client_secret=client_secret, start_year=1995, end_year=2026)
             for art in arts:
                 u = art["url"]
                 if u in searched_urls:
@@ -1188,13 +1188,13 @@ class OnlineNewsTracker:
                 "found_records": len(all_records),
                 "articles_searched": article_count,
                 "unique_reporters": res["unique_reporters"],
-                "message": f"20개년 온라인 기사 {article_count}건을 탐색·분석하여 '{name}' 기자의 발령 및 활동 기록 {len(all_records)}건을 실시간 수집하고 커리어 프로필을 구축했습니다!"
+                "message": f"30개년 온라인 기사 {article_count}건을 탐색·분석하여 '{name}' 기자의 발령 및 활동 기록 {len(all_records)}건을 실시간 수집하고 커리어 프로필을 구축했습니다!"
             }
         else:
             return {
                 "found_records": 0,
                 "articles_searched": article_count,
-                "message": f"20개년 온라인 기사 {article_count}건을 탐색했으나 '{name}' 기자의 발령문 또는 최근 기사를 찾지 못했습니다."
+                "message": f"30개년 온라인 기사 {article_count}건을 탐색했으나 '{name}' 기자의 발령문 또는 최근 기사를 찾지 못했습니다."
             }
 
     @classmethod
@@ -1641,12 +1641,12 @@ def load_and_process_bigkinds_file(file_path_or_buffer, append: bool = True) -> 
 
 
 # ==========================================
-# 7. 20개년 커리어 프로필 매트릭스 및 엑셀 리포트 빌더
+# 7. 30개년 커리어 프로필 매트릭스 및 엑셀 리포트 빌더
 # ==========================================
 
 def generate_career_profile_metrics(timeline: List[Dict[str, Any]], reporter_obj: Dict[str, Any]) -> Dict[str, Any]:
     """
-    20개년 시계열 발령/활동 데이터를 기반으로 종합 커리어 프로필 매트릭스를 분석합니다:
+    30개년 시계열 발령/활동 데이터를 기반으로 종합 커리어 프로필 매트릭스를 분석합니다:
     - 활동 기간 및 연차 산정 (Career Span)
     - 연도별 소속 매체 이동 로드맵 (Affiliation Journey)
     - 직급 승진 사다리 (Progression Ladder)
@@ -1670,7 +1670,7 @@ def generate_career_profile_metrics(timeline: List[Dict[str, Any]], reporter_obj
         last_year = int(last_date_str[:4])
         career_years = max(1, last_year - first_year + 1)
     except Exception:
-        first_year = 2020
+        first_year = 1995
         last_year = 2026
         career_years = 1
 
@@ -1762,7 +1762,7 @@ def generate_career_excel(
     job_changes: List[Dict[str, Any]]
 ) -> bytes:
     """
-    인물의 20개년 커리어 프로필, 연대기 타임라인, 이직 히스토리를
+    인물의 30개년 커리어 프로필, 연대기 타임라인, 이직 히스토리를
     정돈된 서식의 다중 시트 Excel(.xlsx) 바이트 스트림으로 생성합니다.
     """
     output = io.BytesIO()
@@ -1789,7 +1789,7 @@ def generate_career_excel(
         df_summary = pd.DataFrame(summary_data)
         df_summary.to_excel(writer, sheet_name="1_커리어_프로필_요약", index=False)
 
-        # Sheet 2: 20개년 발령 및 활동 연대기
+        # Sheet 2: 30개년 발령 및 활동 연대기
         timeline_rows = []
         for t in timeline:
             p_date = str(t.get("pub_date", ""))
@@ -1810,7 +1810,7 @@ def generate_career_excel(
         df_timeline = pd.DataFrame(timeline_rows)
         if not df_timeline.empty:
             df_timeline = df_timeline.sort_values(by="발령일자", ascending=True)
-        df_timeline.to_excel(writer, sheet_name="2_20개년_발령_연대기", index=False)
+        df_timeline.to_excel(writer, sheet_name="2_30개년_발령_연대기", index=False)
 
         # Sheet 3: 이직 히스토리
         if job_changes:

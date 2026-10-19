@@ -150,7 +150,7 @@ st.markdown("""
         color: #475569;
     }
 
-    /* 20개년 소속 매체 로드맵 및 사다리 */
+    /* 30개년 소속 매체 로드맵 및 사다리 */
     .roadmap-container {
         display: flex;
         flex-wrap: wrap;
@@ -339,7 +339,7 @@ st.markdown("""
 
 
 # ==========================================
-# 2. 세션 기반 개인 전용 보안 인증
+# 2. 세션 기반 개인 전용 보안 인증 및 UI 렌더러
 # ==========================================
 
 def get_secret(key: str, default: str = "") -> str:
@@ -348,6 +348,15 @@ def get_secret(key: str, default: str = "") -> str:
         return st.secrets.get(key, default)
     except Exception:
         return os.environ.get(key, default)
+
+
+def render_html(html_content: str):
+    """
+    HTML 문자열의 모든 선행 공백과 들여쓰기를 제거하여 
+    마크다운 4스페이스 들여쓰기 코드블록 변환 버그를 완벽 방지하고 순수 HTML로 안전하게 렌더링합니다.
+    """
+    clean_lines = [line.strip() for line in html_content.strip().splitlines() if line.strip()]
+    st.markdown("\n".join(clean_lines), unsafe_allow_html=True)
 
 
 # ==========================================
@@ -428,7 +437,7 @@ with tab_search:
     col_title, col_quick_btn = st.columns([3, 1])
     with col_title:
         st.markdown("### 🌐 언론인 실시간 온라인 검색")
-        st.caption("기자 이름을 입력하고 [검색]을 누르면 다음·네이버 최신 온라인 기사 전문을 크롤링하여 소속 언론사, 부서, 이메일, 발령 이력을 즉시 분석합니다.")
+        st.caption("기자 이름을 입력하고 [검색]을 누르면 30개년(1995~2026) 포털 뉴스 전문을 실시간 크롤링하여 소속 언론사, 부서, 직급 변천, 이직 이력 및 커리어 프로필을 즉시 구축합니다.")
     with col_quick_btn:
         st.write("")
         if st.button("⚡ 최신 발령 실시간 수집", use_container_width=True, type="secondary", help="인터넷 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
@@ -521,7 +530,7 @@ with tab_search:
         timeline = db.get_reporter_timeline(selected_reporter_id)
 
         if reporter_obj and timeline:
-            # 20개년 커리어 지표 및 로드맵 산출
+            # 30개년 커리어 지표 및 로드맵 산출
             metrics = generate_career_profile_metrics(timeline, reporter_obj)
             all_jc = db.get_job_changes(limit=500)
             rep_jc = [jc for jc in all_jc if jc.get("reporter_id") == selected_reporter_id or jc.get("name") == reporter_obj["name"]]
@@ -534,12 +543,12 @@ with tab_search:
             # 1. 상단 프로필 헤더 및 엑셀 다운로드 액션 바
             col_phead, col_pdl1, col_pdl2 = st.columns([3, 1.2, 1.2])
             with col_phead:
-                st.markdown(f"### 📋 {reporter_obj['name']} 기자의 20개년 커리어 종합 프로필")
+                st.markdown(f"### 📋 {reporter_obj['name']} 기자의 30개년 커리어 종합 프로필")
             with col_pdl1:
                 st.download_button(
-                    "📥 20개년 프로필 엑셀 (.xlsx)",
+                    "📥 30개년 프로필 엑셀 (.xlsx)",
                     data=excel_bytes,
-                    file_name=f"{reporter_obj['name']}_20개년_커리어_프로필.xlsx",
+                    file_name=f"{reporter_obj['name']}_30개년_커리어_프로필.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
@@ -558,14 +567,14 @@ with tab_search:
             email = reporter_obj.get("email", "")
 
             # 2. Executive Dossier Summary Card
-            st.markdown(f"""
+            render_html(f"""
             <div class="profile-card">
                 <div class="profile-name">
                     <span>{reporter_obj['name']}</span>
                     <span class="badge badge-transfer">{current_media}</span>
                     <span class="badge badge-normal">{current_dept}</span>
                     <span class="badge badge-promotion">{current_rank}</span>
-                    <span class="badge badge-career">총 {metrics.get('career_years', 1)}년차 ({metrics.get('first_year', 2020)}년 ~ {metrics.get('last_year', 2026)}년)</span>
+                    <span class="badge badge-career">총 {metrics.get('career_years', 1)}년차 ({metrics.get('first_year', 1995)}년 ~ {metrics.get('last_year', 2026)}년)</span>
                     {'<span class="badge badge-jobchange">이직 ' + str(metrics.get('job_change_count', 0)) + '회</span>' if metrics.get('job_change_count', 0) > 0 else ''}
                 </div>
                 <div class="profile-meta">
@@ -575,47 +584,47 @@ with tab_search:
                     • <b>주요 출입처 전문분야:</b> <b style="color:#0F172A;">{metrics.get('primary_domain', '일반')}</b>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
             # 3. 4대 핵심 커리어 KPI 지표 카드
             kcol1, kcol2, kcol3, kcol4 = st.columns(4)
             with kcol1:
-                st.markdown(f"""
+                render_html(f"""
                 <div class="metric-card">
                     <div class="metric-label">총 경력 연차</div>
                     <div class="metric-value">{metrics.get('career_years', 1)}년차</div>
-                    <div class="metric-sub">{metrics.get('first_year', 2020)}년 ~ {metrics.get('last_year', 2026)}년</div>
+                    <div class="metric-sub">{metrics.get('first_year', 1995)}년 ~ {metrics.get('last_year', 2026)}년</div>
                 </div>
-                """, unsafe_allow_html=True)
+                """)
             with kcol2:
-                st.markdown(f"""
+                render_html(f"""
                 <div class="metric-card">
                     <div class="metric-label">현재 소속 / 직급</div>
                     <div class="metric-value" style="font-size:1.4rem;">{current_media}</div>
                     <div class="metric-sub" style="color:#475569;">{current_dept} {current_rank}</div>
                 </div>
-                """, unsafe_allow_html=True)
+                """)
             with kcol3:
-                st.markdown(f"""
+                render_html(f"""
                 <div class="metric-card">
                     <div class="metric-label">주요 출입처 전문분야</div>
                     <div class="metric-value" style="font-size:1.4rem;">{metrics.get('primary_domain', '일반')}</div>
                     <div class="metric-sub">발령 및 활동 기사 기반</div>
                 </div>
-                """, unsafe_allow_html=True)
+                """)
             with kcol4:
-                st.markdown(f"""
+                render_html(f"""
                 <div class="metric-card">
                     <div class="metric-label">매체 간 이직 횟수</div>
                     <div class="metric-value">{metrics.get('job_change_count', 0)}회</div>
                     <div class="metric-sub">총 {len(metrics.get('affiliation_journey', []))}개 언론사 활동</div>
                 </div>
-                """, unsafe_allow_html=True)
+                """)
 
-            # 4. 소속 매체 20개년 이동 로드맵 (Affiliation Journey)
+            # 4. 소속 매체 30개년 이동 로드맵 (Affiliation Journey)
             aff_list = metrics.get("affiliation_journey", [])
             if aff_list:
-                st.markdown("#### 🏛️ 20개년 소속 매체 이동 로드맵 (Affiliation Journey)")
+                st.markdown("#### 🏛️ 30개년 소속 매체 이동 로드맵 (Affiliation Journey)")
                 roadmap_html = '<div class="roadmap-container">'
                 for idx, aff in enumerate(aff_list):
                     roadmap_html += f"""
@@ -627,7 +636,7 @@ with tab_search:
                     if idx < len(aff_list) - 1:
                         roadmap_html += '<div class="roadmap-arrow">➔</div>'
                 roadmap_html += '</div>'
-                st.markdown(roadmap_html, unsafe_allow_html=True)
+                render_html(roadmap_html)
 
             # 5. 직급 성장 사다리 (Progression Ladder) & 출입처 도메인 분석
             l_col, d_col = st.columns([1.2, 1])
@@ -645,7 +654,7 @@ with tab_search:
                         if idx < len(l_items) - 1:
                             ladder_html += '<span style="color:#94A3B8; font-weight:700;">➔</span>'
                     ladder_html += '</div>'
-                    st.markdown(ladder_html, unsafe_allow_html=True)
+                    render_html(ladder_html)
                 else:
                     st.write("단일 직급 활동 기록이 확인되었습니다.")
 
@@ -661,12 +670,12 @@ with tab_search:
                         </span>
                         """
                     d_html += '</div>'
-                    st.markdown(d_html, unsafe_allow_html=True)
+                    render_html(d_html)
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # 6. 20개년 커리어 연대기 타임라인
-            st.markdown("#### ⏳ 20개년 커리어 연대기 타임라인 (Chronological Timeline)")
+            # 6. 30개년 커리어 연대기 타임라인
+            st.markdown("#### ⏳ 30개년 커리어 연대기 타임라인 (Chronological Timeline)")
             st.caption("기사 원문 링크를 클릭하면 해당 시점의 실제 뉴스 기사 웹페이지로 바로 이동합니다.")
 
             # 타임라인 카드 렌더링
@@ -715,14 +724,14 @@ with tab_search:
                 </div>
                 """
             timeline_html += '</div>'
-            st.markdown(timeline_html, unsafe_allow_html=True)
+            render_html(timeline_html)
 
             # 7. 하단 엑셀 다운로드 재제공
             st.markdown("<br>", unsafe_allow_html=True)
             st.download_button(
-                "📥 20개년 커리어 프로필 엑셀 다운로드 (.xlsx)",
+                "📥 30개년 커리어 프로필 엑셀 다운로드 (.xlsx)",
                 data=excel_bytes,
-                file_name=f"{reporter_obj['name']}_20개년_커리어_프로필.xlsx",
+                file_name=f"{reporter_obj['name']}_30개년_커리어_프로필.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 key="btn_dl_bottom"
@@ -752,37 +761,37 @@ with tab_jobchanges:
 
         mcol1, mcol2, mcol3, mcol4 = st.columns(4)
         with mcol1:
-            st.markdown(f"""
+            render_html(f"""
             <div class="metric-card">
                 <div class="metric-label">총 이직 탐지 건수</div>
                 <div class="metric-value">{total_jc}건</div>
                 <div class="metric-sub">매체 간 이동 감지</div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
         with mcol2:
-            st.markdown(f"""
+            render_html(f"""
             <div class="metric-card">
                 <div class="metric-label">최다 유입 언론사</div>
                 <div class="metric-value">{top_in}</div>
                 <div class="metric-sub">외부 기자 적극 영입</div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
         with mcol3:
-            st.markdown(f"""
+            render_html(f"""
             <div class="metric-card">
                 <div class="metric-label">최다 유출 언론사</div>
                 <div class="metric-value">{top_out}</div>
                 <div class="metric-sub">타사 이직 발생 매체</div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
         with mcol4:
-            st.markdown(f"""
+            render_html(f"""
             <div class="metric-card">
                 <div class="metric-label">평균 알고리즘 신뢰도</div>
                 <div class="metric-value">{avg_score}점</div>
                 <div class="metric-sub">연속성·도메인 일치도</div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
         # 필터링 컨트롤
         st.markdown("##### 🔍 이직 내역 필터")
@@ -807,7 +816,7 @@ with tab_jobchanges:
         # 이직 카드 피드 렌더링
         st.markdown(f"**총 {len(filtered_df)}건의 이직 이벤트가 조회되었습니다.**")
         for _, row in filtered_df.iterrows():
-            st.markdown(f"""
+            render_html(f"""
             <div class="jobchange-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                     <div style="font-size: 1.15rem; font-weight: 800; color: #0F172A;">
@@ -827,7 +836,7 @@ with tab_jobchanges:
                     <span>탐지 근거: <b>{row['detected_reason']}</b></span>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
 
 # =========================================================================
