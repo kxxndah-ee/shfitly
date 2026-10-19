@@ -202,7 +202,7 @@ st.markdown("""
     .timeline-dot {
         position: absolute;
         left: -40px;
-        top: 4px;
+        top: 2px;
         width: 16px;
         height: 16px;
         border-radius: 50%;
@@ -213,6 +213,13 @@ st.markdown("""
     .timeline-dot-jobchange {
         background-color: #8B5CF6;
         box-shadow: 0 0 0 2px #8B5CF6;
+    }
+    .timeline-date-above {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: #0F172A;
+        margin-bottom: 8px;
+        line-height: 1.2;
     }
     .timeline-card {
         background: #FFFFFF;
@@ -739,9 +746,14 @@ with tab_search:
             st.markdown("#### 타임라인")
             st.caption("기사 원문 링크를 클릭하면 해당 시점의 실제 뉴스 기사 웹페이지로 이동합니다.")
 
-            # 타임라인 카드 렌더링
+            # 타임라인 카드 렌더링 (1. 최근순 정렬, 2. 날짜는 박스 위에 표기)
+            timeline_desc = sorted(
+                timeline,
+                key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10],
+                reverse=True
+            )
             timeline_html = '<div class="timeline-container">'
-            for item in timeline:
+            for item in timeline_desc:
                 action = item.get("action_type", "발령")
                 is_job_change = "이직" in action
                 dot_class = "timeline-dot timeline-dot-jobchange" if is_job_change else "timeline-dot"
@@ -768,10 +780,10 @@ with tab_search:
                 timeline_html += f"""
                 <div class="timeline-item">
                     <div class="{dot_class}"></div>
+                    <div class="timeline-date-above">{item['pub_date']}</div>
                     <div class="timeline-card">
                         <div class="timeline-header">
                             <span class="timeline-title">{item['media']} · {item['dept']} {item['rank_title']}</span>
-                            <span class="timeline-date">{item['pub_date']}</span>
                         </div>
                         <div>
                             {badge_html}
