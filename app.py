@@ -30,6 +30,7 @@ from data_pipeline import (
     normalize_media_name,
     generate_career_profile_metrics,
     generate_career_excel,
+    is_personnel_article_title,
     DOMAIN_TAXONOMY,
     RANK_HIERARCHY
 )
@@ -956,7 +957,7 @@ with tab_search:
 # =========================================================================
 with tab_monitoring:
     st.markdown("### 인사 모니터링")
-    st.caption("당일 나온 언론사 공식 인사 기사를 실시간 모니터링하여 언론사별, 발령 구분별로 일목요연하게 정리한 인사 소식 브리핑입니다.")
+    st.caption("기사 제목에 [인사] 또는 <인사>가 포함된 언론사 공식 인사 기사를 실시간 모니터링하여 언론사별, 발령 구분별로 일목요연하게 정리한 인사 소식 브리핑입니다.")
 
     # 상단 컨트롤 바 (일자 선택, 검색창, 실시간 수집 버튼)
     m_col_date, m_col_search, m_col_btn = st.columns([1.2, 1.8, 1.2], vertical_alignment="bottom")
@@ -967,7 +968,7 @@ with tab_monitoring:
         filter_kw = st.text_input("인사 소식 내 검색", placeholder="언론사명, 기자명, 부서명 검색", label_visibility="visible")
     with m_col_btn:
         if st.button("당일 인사 실시간 수집 및 새로고침", use_container_width=True, type="primary"):
-            with st.spinner("온라인 포털에서 당일 및 최신 인사 기사 전문을 실시간 수집 및 분석 중..."):
+            with st.spinner("온라인 포털에서 당일 및 최신 [인사]/<인사> 기사 전문을 실시간 수집 및 분석 중..."):
                 nid = get_secret("naver_client_id", "")
                 nsec = get_secret("naver_client_secret", "")
                 res = OnlineNewsTracker.fetch_daily_personnel_news(
@@ -976,7 +977,7 @@ with tab_monitoring:
                     client_id=nid,
                     client_secret=nsec
                 )
-                st.session_state["upload_banner"] = res.get("message", "인사 기사 실시간 수집 및 정리가 완료되었습니다.")
+                st.session_state["upload_banner"] = res.get("message", "공식 [인사]/<인사> 기사 실시간 수집 및 정리가 완료되었습니다.")
                 st.rerun()
 
     # 데이터 로드: 선택된 일자 우선 조회, 없으면 최근 전체 조회
@@ -989,8 +990,22 @@ with tab_monitoring:
         summary_data = db.get_daily_personnel_summary("")
         is_showing_fallback = True
 
-    all_raw_recs = summary_data["raw_records"]
-    media_news_list = summary_data["media_news"]
+    # [인사] 또는 <인사> 기사만 엄격 필터링
+    all_raw_recs = [r for r in summary_data["raw_records"] if is_personnel_article_title(r.get("article_title", ""))]
+    media_news_list = []
+    for mn in summary_data["media_news"]:
+        valid_recs = [r for r in mn.get("records", []) if is_personnel_article_title(r.get("article_title", ""))]
+        if valid_recs:
+            by_act = {}
+            for r in valid_recs:
+                act = r.get("action_type", "발령")
+                if act not in by_act:
+                    by_act[act] = []
+                by_act[act].append(r)
+            mn_copy = dict(mn)
+            mn_copy["records"] = valid_recs
+            mn_copy["by_action"] = by_act
+            media_news_list.append(mn_copy)
 
     # 키워드 필터링 적용 (언론사명, 기자명, 부서명)
     if filter_kw.strip():
@@ -1071,10 +1086,10 @@ with tab_monitoring:
     st.markdown("<br>", unsafe_allow_html=True)
 
     if is_showing_fallback and not filter_kw.strip():
-        st.info(f"{date_str} 일자의 공식 인사 기사가 아직 수집되지 않아 가장 최근 수집된 인사 소식을 표시하고 있습니다. 실시간 기사를 확인하시려면 상단 '당일 인사 실시간 수집 및 새로고침' 버튼을 눌러주세요.")
+        st.info(f"{date_str} 일자의 공식 [인사]/<인사> 기사가 아직 수집되지 않아 가장 최근 수집된 인사 소식을 표시하고 있습니다. 실시간 기사를 확인하시려면 상단 '당일 인사 실시간 수집 및 새로고침' 버튼을 눌러주세요.")
 
     if not media_news_list:
-        st.warning("표시할 인사 소식이 없습니다. 상단 '당일 인사 실시간 수집 및 새로고침' 버튼을 눌러 온라인 기사에서 발령 명단을 수집하세요.")
+        st.warning("표시할 [인사]/<인사> 공식 인사 소식이 없습니다. 상단 '당일 인사 실시간 수집 및 새로고침' 버튼을 눌러 온라인 기사에서 발령 명단을 수집하세요.")
     else:
         st.markdown("#### 언론사별 인사 소식 정리")
 

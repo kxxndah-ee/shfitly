@@ -14,6 +14,7 @@ data_pipeline.py
 import os
 import io
 import re
+import html
 import sqlite3
 import datetime
 from typing import List, Dict, Tuple, Optional, Any
@@ -202,7 +203,7 @@ def is_personnel_article_title(title: str) -> bool:
     """기사 제목이 [인사] 또는 <인사> (및 대괄호/화살괄호 변형)인 공식 인사 기사인지 엄격 검증."""
     if not title:
         return False
-    t = str(title).replace(" ", "")
+    t = html.unescape(str(title)).replace(" ", "")
     return ("[인사]" in t) or ("<인사>" in t) or ("【인사】" in t) or ("(인사)" in t)
 
 
@@ -1400,14 +1401,24 @@ class OnlineNewsTracker:
             target_date = datetime.date.today().strftime("%Y-%m-%d")
 
         search_queries = [
-            "[인사] 신문",
-            "[인사] 일보",
-            "[인사] 경제",
-            "[인사] 방송",
-            "[인사] 미디어",
-            "[인사] 뉴스",
-            "[인사] 통신",
-            "[인사]"
+            '"[인사]"',
+            '"<인사>"',
+            '[인사] 신문',
+            '<인사> 신문',
+            '[인사] 방송',
+            '<인사> 방송',
+            '[인사] 통신',
+            '<인사> 통신',
+            '[인사] 일보',
+            '<인사> 일보',
+            '[인사] 경제',
+            '<인사> 경제',
+            '[인사] 미디어',
+            '<인사> 미디어',
+            '[인사] 뉴스',
+            '<인사> 뉴스',
+            '[인사]',
+            '<인사>'
         ]
 
         seen_urls = set()
@@ -1418,7 +1429,8 @@ class OnlineNewsTracker:
                 break
             arts = cls.search_online_articles(q, max_items=12, client_id=client_id, client_secret=client_secret)
             for a in arts:
-                if not is_personnel_article_title(a.get("title", "")):
+                tit = a.get("title", "")
+                if not is_personnel_article_title(tit):
                     continue
                 u = a.get("url", "")
                 if not u or u in seen_urls:
@@ -1447,7 +1459,8 @@ class OnlineNewsTracker:
             )
             clean_recs = [
                 r for r in recs 
-                if r["name"] not in STOPWORDS and len(r["name"]) >= 2
+                if is_personnel_article_title(r.get("article_title", ""))
+                and r["name"] not in STOPWORDS and len(r["name"]) >= 2
             ]
             if not clean_recs:
                 continue
@@ -1859,6 +1872,7 @@ class MediaDatabase:
         """
         DB에 저장된 발령 레코드 중 당일(또는 지정된 일자/최근 일자)의 데이터를
         언론사별 및 발령구분(승진/전보/보임 등)별로 구조화하여 반환합니다.
+        제목에 [인사] 또는 <인사>가 포함된 공식 인사 기사만 엄격 필터링하여 분석합니다.
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -1872,9 +1886,12 @@ class MediaDatabase:
                 cursor.execute("""
                     SELECT * FROM personnel_records
                     ORDER BY pub_date DESC, media ASC, id ASC
-                    LIMIT 200
+                    LIMIT 500
                 """)
-            rows = [dict(row) for row in cursor.fetchall()]
+            raw_rows = [dict(row) for row in cursor.fetchall()]
+
+        # [인사] 또는 <인사> 공식 기사 레코드만 엄격 필터링
+        rows = [r for r in raw_rows if is_personnel_article_title(r.get("article_title", ""))]
 
         grouped = {}
         for r in rows:
@@ -2005,6 +2022,10 @@ def load_and_process_bigkinds_file(file_path_or_buffer, append: bool = True) -> 
 
         media = str(row["언론사"]).strip()
         title = str(row.get("제목", "")).strip()
+        # [인사] 또는 <인사> 기사만 엄격 필터링
+        if title and not is_personnel_article_title(title):
+            continue
+
         body = str(row["본문"]).strip()
         url = str(row.get("URL", "")).strip()
 
