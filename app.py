@@ -515,11 +515,6 @@ with tab_search:
             options=list(options_dict.keys())
         )
         selected_reporter_id = options_dict[selected_label]
-    elif all_reporters:
-        pass
-    else:
-        st.write("")
-        st.info("상단 검색창에 기자 이름을 입력하고 검색 버튼을 누르면 실시간 온라인 기사를 크롤링하여 프로필을 생성합니다.")
 
     # 선택된 기자의 상세 프로필 및 타임라인 렌더링
     if selected_reporter_id:
