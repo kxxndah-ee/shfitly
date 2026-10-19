@@ -605,52 +605,57 @@ class PersonnelTrackerEngine:
                 domain_sim = calculate_domain_similarity(rec_domain, last_domain)
                 score += domain_sim * 25.0
 
-            # CASE B: 서로 다른 언론사 간의 이동 (이직 탐지 알고리즘 Step A, B, C)
+            # CASE B: 서로 다른 언론사 간의 이동 (이직 탐지 알고리즘)
             else:
-                # Step B: 연간 정기인사 텀(450일) 또는 동일 이메일(최대 2년) 적용
-                max_window = 730 if has_same_email else 450
-                if -180 <= days_diff <= max_window:
-                    time_score = max(5.0, 30.0 - (abs(days_diff) / 20.0))
-                    score += time_score
+                # 16번 요청 조건 반영:
+                # 1) A매체 이전 인사 후 6개월(180일) 안에 타사 인사리스트에 등장할 시 이직으로 감지
+                # 2) 직급이 강등될 경우 이직에서 제외 (Demotion Filter)
+                # 3) 동명이인 필터링: 유사한 부서/도메인일 경우에만 이직으로 인정
+                
+                is_within_6_months = (0 < days_diff <= 180) or (has_same_email and 0 < days_diff <= 365)
+                is_demoted = (rank_diff < 0)
+                
+                # 부서 및 도메인 유사도 검증
+                domain_sim = calculate_domain_similarity(rec_domain, last_domain)
+                last_kw = set(re.findall(r"[가-힣]{2,}", last_dept)) - STOPWORDS
+                rec_kw = set(re.findall(r"[가-힣]{2,}", rec_dept)) - STOPWORDS
+                kw_match = bool(last_kw and rec_kw and (last_kw & rec_kw))
+                is_similar_dept = (domain_sim >= 0.5) or kw_match or (rec_domain == last_domain and rec_domain != "일반") or has_same_email
 
-                    # Step C: 직급 연속성 검증 (수평 이동 ±1 직급 또는 정상 승진 +2)
+                if is_within_6_months and not is_demoted and is_similar_dept:
+                    # 정상적인 매체 간 이직 판정
+                    score += 65.0 + domain_sim * 30.0 + max(0.0, 25.0 - (days_diff / 10.0))
                     if -1 <= rank_diff <= 2:
-                        score += 35.0
-                    elif rank_diff < -1:
-                        score -= 80.0
-                    else:
-                        score -= 40.0
-
-                    domain_sim = calculate_domain_similarity(rec_domain, last_domain)
-                    score += domain_sim * 40.0
-
-                    # 이직 판정 임계치 충족 여부 체크
-                    if score >= 60.0 or has_same_email:
-                        is_job_change = True
-                        candidate_change_meta = {
-                            "name": name,
-                            "from_media": last_media,
-                            "from_dept": last_dept,
-                            "from_rank": last_rec["rank_title"],
-                            "from_date": str(last_date),
-                            "to_media": rec_media,
-                            "to_dept": rec_dept,
-                            "to_rank": rec_rank,
-                            "to_date": str(rec_date),
-                            "days_gap": days_diff,
-                            "confidence_score": round(score, 1),
-                            "detected_reason": (
-                                f"직급 연속성(Δ={rank_diff}), 분야 유사도({int(domain_sim*100)}%), "
-                                f"{'이메일 일치' if has_same_email else '타임라인 부합'}"
-                            )
-                        }
-                    else:
-                        is_job_change = False
-                        candidate_change_meta = None
+                        score += 20.0
+                    
+                    is_job_change = True
+                    candidate_change_meta = {
+                        "name": name,
+                        "from_media": last_media,
+                        "from_dept": last_dept,
+                        "from_rank": last_rec["rank_title"],
+                        "from_date": str(last_date),
+                        "to_media": rec_media,
+                        "to_dept": rec_dept,
+                        "to_rank": rec_rank,
+                        "to_date": str(rec_date),
+                        "days_gap": days_diff,
+                        "confidence_score": round(score, 1),
+                        "detected_reason": (
+                            f"6개월 내 타사 이동, 부서 유사도({int(domain_sim*100)}%), "
+                            f"{'이메일 일치' if has_same_email else '직급 승진 및 유지'}"
+                        )
+                    }
                 else:
-                    score -= 50.0
+                    # 6개월 초과, 직급 강등, 또는 비유사 부서: 이직에서 제외 및 동명이인 분리 가중치
                     is_job_change = False
                     candidate_change_meta = None
+                    if is_demoted:
+                        score -= 90.0  # 직급 강등 시 동명이인으로 분리
+                    if not is_similar_dept and not has_same_email:
+                        score -= 90.0  # 부서 무관 시 동명이인으로 분리
+                    if not is_within_6_months and not has_same_email:
+                        score -= 50.0  # 6개월 초과 시 이직 미인정
 
             if score > best_score:
                 best_score = score
@@ -685,7 +690,7 @@ class PersonnelTrackerEngine:
             if is_job_change_candidate and change_metadata:
                 change_metadata["reporter_id"] = best_cluster["reporter_id"]
                 job_changes_collector.append(change_metadata)
-                record["action_type"] = f"이직 ({change_metadata['from_media']} ➔ {rec_media})"
+                record["action_type"] = f"이직: {change_metadata['from_media']} ➔ {rec_media}"
 
             self._update_display_label(best_cluster)
             return best_cluster
@@ -724,15 +729,15 @@ class PersonnelTrackerEngine:
         return new_cluster
 
     def _update_display_label(self, cluster: Dict[str, Any]):
-        """드롭다운에서 동명이인을 한눈에 구분할 수 있는 세련된 표시명 생성."""
+        """드롭다운에서 동명이인을 한눈에 구분할 수 있는 표시명 생성."""
         name = cluster["name"]
         curr_media = cluster["current_media"]
         curr_dept = cluster["current_dept"]
         email = cluster.get("email", "")
-        email_hint = f" / {email}" if email else ""
+        email_hint = f" · {email}" if email else ""
         first_rec = cluster["records"][0]
-        origin_hint = f" ({first_rec['media']} 출신)" if first_rec["media"] != curr_media else ""
-        cluster["display_label"] = f"{name} ({curr_media} {curr_dept}{origin_hint}{email_hint})"
+        origin_hint = f" · {first_rec['media']} 출신" if first_rec["media"] != curr_media else ""
+        cluster["display_label"] = f"{name} : {curr_media} {curr_dept}{origin_hint}{email_hint}"
 
 
 # ==========================================
@@ -1454,6 +1459,67 @@ class MediaDatabase:
             cursor.execute("SELECT * FROM reporters ORDER BY name ASC")
             return [dict(row) for row in cursor.fetchall()]
 
+    @staticmethod
+    def deduplicate_timeline_records(records: List[Dict[str, Any]], window_days: int = 60) -> List[Dict[str, Any]]:
+        """
+        일정 기간(기본 60일) 동안 동일한 발령(동일 매체, 부서, 직급)이 여러 기사로 보도되어
+        중복 수집된 경우, 첫 기사 발행 일자를 기준으로 단일 이력으로 병합합니다.
+        """
+        if not records:
+            return []
+        
+        # 날짜 오름차순 정렬
+        sorted_records = sorted(records, key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10])
+        merged: List[Dict[str, Any]] = []
+
+        for rec in sorted_records:
+            rec_copy = dict(rec)
+            r_date_str = str(rec_copy.get("pub_date", ""))[:10]
+            try:
+                r_date = datetime.datetime.strptime(r_date_str, "%Y-%m-%d").date()
+            except Exception:
+                r_date = None
+
+            matched_idx = -1
+            for idx, m in enumerate(merged):
+                same_media = normalize_media_name(m.get("media", "")) == normalize_media_name(rec_copy.get("media", ""))
+                same_dept = m.get("dept", "").strip() == rec_copy.get("dept", "").strip()
+                same_rank = m.get("rank_title", "").strip() == rec_copy.get("rank_title", "").strip()
+
+                if same_media and same_dept and same_rank:
+                    m_date_str = str(m.get("pub_date", ""))[:10]
+                    try:
+                        m_date = datetime.datetime.strptime(m_date_str, "%Y-%m-%d").date()
+                    except Exception:
+                        m_date = None
+
+                    if r_date and m_date:
+                        if abs((r_date - m_date).days) <= window_days:
+                            matched_idx = idx
+                            break
+                    else:
+                        matched_idx = idx
+                        break
+
+            if matched_idx >= 0:
+                # 첫 기사일자(가장 빠른 일자)를 기준으로 표기
+                existing = merged[matched_idx]
+                e_date_str = str(existing.get("pub_date", ""))[:10]
+                if r_date_str and (not e_date_str or r_date_str < e_date_str):
+                    existing["pub_date"] = r_date_str
+                    if rec_copy.get("article_url"):
+                        existing["article_url"] = rec_copy["article_url"]
+                    if rec_copy.get("article_title"):
+                        existing["article_title"] = rec_copy["article_title"]
+                elif not existing.get("article_url") and rec_copy.get("article_url"):
+                    existing["article_url"] = rec_copy["article_url"]
+                    existing["article_title"] = rec_copy.get("article_title", "")
+            else:
+                merged.append(rec_copy)
+
+        merged.sort(key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10])
+        return merged
+
     def get_reporter_timeline(self, reporter_id: str) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -1462,7 +1528,8 @@ class MediaDatabase:
                 WHERE reporter_id = ?
                 ORDER BY pub_date ASC, id ASC
             """, (reporter_id,))
-            return [dict(row) for row in cursor.fetchall()]
+            rows = [dict(row) for row in cursor.fetchall()]
+            return self.deduplicate_timeline_records(rows)
 
     def search_reporters(self, name: str = "", media: str = "", dept: str = "", rank: str = "") -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
