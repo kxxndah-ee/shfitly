@@ -482,7 +482,7 @@ with tab_search:
         if search_submitted:
             name_clean = search_name_input.strip()
             if name_clean:
-                with st.spinner(f"포털 온라인 뉴스에서 '{name_clean}' 기자의 30개년 기사 및 발령문을 실시간 검색 중..."):
+                with st.spinner("실시간 검색 중..."):
                     nid = get_secret("naver_client_id", "")
                     nsec = get_secret("naver_client_secret", "")
                     res = OnlineNewsTracker.track_reporter_online(name_clean, client_id=nid, client_secret=nsec)
@@ -518,8 +518,7 @@ with tab_search:
 
             # 2번 요청: 매체/부서별 검색 시 실시간 온라인 기사에서 수집
             if m_clean or d_clean or r_clean:
-                search_terms = " ".join([t for t in [m_clean, d_clean, r_clean] if t])
-                with st.spinner(f"포털 온라인 뉴스에서 '{search_terms}' 관련 [인사]/<인사> 기사를 실시간 탐색 및 분석 중..."):
+                with st.spinner("실시간 검색 중..."):
                     nid = get_secret("naver_client_id", "")
                     nsec = get_secret("naver_client_secret", "")
                     res = OnlineNewsTracker.track_media_dept_online(
