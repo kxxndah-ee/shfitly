@@ -743,6 +743,16 @@ with tab_search:
     # 인사 소식 (발령 명단) 테이블 표시 - 이름 검색 또는 매체/부서별 검색 결과 공통
     if matched_records:
         st.markdown("##### 인사 소식")
+        # 중복 발령 기록 제거 및 최신 발령일자 기준 정렬
+        unique_matched = []
+        seen_matched_keys = set()
+        for r in matched_records:
+            k = (r.get("pub_date"), r.get("media"), r.get("dept"), r.get("rank_title"), r.get("name"))
+            if k not in seen_matched_keys:
+                seen_matched_keys.add(k)
+                unique_matched.append(r)
+        unique_matched.sort(key=lambda x: str(x.get("pub_date", "")), reverse=True)
+
         df_display = pd.DataFrame([{
             "언론사": r.get("media", ""),
             "발령구분": r.get("action_type", "발령"),
@@ -751,7 +761,7 @@ with tab_search:
             "성명": r.get("name", ""),
             "발령일자": r.get("pub_date", ""),
             "기사원문(링크주소)": r.get("article_url", "")
-        } for r in matched_records[:50]])
+        } for r in unique_matched[:50]])
         st.dataframe(
             df_display,
             column_config={

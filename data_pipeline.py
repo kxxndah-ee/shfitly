@@ -48,18 +48,23 @@ RANK_HIERARCHY: Dict[str, int] = {
     "국장": 8,
     "본부장": 8,
     "부국장": 7,
+    "부국장직대": 7,
     "부국장대우": 7,
     "에디터": 7,
     "논설위원": 7,
     "해설위원": 7,
     "전문위원": 7,
     "부장": 6,
+    "부장직대": 6,
     "팀장(부장급)": 6,
     "데스크": 6,
     "지국장": 6,
     "부장대우": 5,
+    "직대": 5,
     "차장": 4,
+    "차장직대": 4,
     "팀장": 4,
+    "팀장직대": 4,
     "차장대우": 3,
     "선임기자": 3,
     "전문기자": 3,
@@ -228,6 +233,9 @@ def is_media_organization(name: str) -> bool:
     n = name.lower().strip()
     if n in ["2010년", "2011년", "제1", "미상", "온라인뉴스", "뉴스", "언론사", "기자", "본사", "지사", "편집국", "보도국"]:
         return False
+    # 직급명이나 직책명이 포함된 경우 언론사명이 아님
+    if any(r in n for r in ["부장", "차장", "국장", "팀장", "소장", "실장", "본부장", "위원", "기자", "대표", "이사"]):
+        return False
     for nmk in NON_MEDIA_KEYWORDS:
         if nmk in n:
             return False
@@ -253,10 +261,16 @@ def is_personnel_article_title(title: str, text: str = "") -> bool:
         return False
 
     t_lower = html.unescape(str(title)).lower()
-    for mk in ["전자신문", "건설경제", "바이오스펙테이터", "바이오타임즈", "메디칼타임즈", "약업신문"]:
+    # 1. 언론사/미디어 명칭이 포함되어 있다면 종합 인사 기사이므로 통과
+    for mk in MEDIA_KEYWORDS:
         if mk in t_lower:
             return True
 
+    # 2. 제목에 '등', '외', '종합', '오늘의' 등이 포함된 복합 종합 인사 기사는 본문에 언론사 발령이 포함될 수 있으므로 허용
+    if any(k in t_lower for k in [" 등", " 외", "/등", "/외", "종합", "오늘의", "外"]):
+        return True
+
+    # 3. 언론사명이 없고 단독 비언론사(정부부처/기업 등) 인사 기사인 경우 제외
     for nmk in NON_MEDIA_KEYWORDS:
         if nmk in t_lower:
             return False
@@ -349,24 +363,45 @@ class PersonnelRegexParser:
                 if is_media_organization(cand_media):
                     current_media = normalize_media_name(cand_media)
 
-            # 2. 발령 액션 감지 (<승진>, ◇전보 등)
-            action_match = cls.ACTION_HEADER_PATTERN.search(line)
-            if action_match:
-                current_action = action_match.group(1).strip()
-
-            # 3. 섹션 직급 헤더 감지 (예: <부장급>, [국장급], <차장>)
-            section_rank_match = re.search(r"(?:<|\[|\()([가-힣]+(?:급|대우)?)(?:>|\]|\))", line)
-            if section_rank_match:
-                cand_rank = section_rank_match.group(1).replace("급", "").strip()
-                if cand_rank in RANK_HIERARCHY:
-                    current_section_rank = cand_rank
+            # 2. 발령 액션 및 섹션 직급 헤더 감지 (예: ◇부장대우 승진, ◇차장 승진, <승진>, ◇전보 등)
+            clean_hdr = re.sub(r"^[◇◆■▲△▼▷▶<\[\(【\s]+", "", line).strip()
+            for act_cand in ["승진", "전보", "보임", "보직", "선임", "신규선임", "전출", "전입", "파견", "퇴임", "위촉"]:
+                if act_cand in clean_hdr:
+                    current_action = act_cand
+                    break
+            for r_cand in SORTED_RANKS:
+                if clean_hdr.startswith(r_cand) or f"{r_cand} 승진" in clean_hdr or f"{r_cand}승진" in clean_hdr or f"{r_cand} 전보" in clean_hdr or f"<{r_cand}>" in line or f"[{r_cand}]" in line or f"({r_cand})" in line:
+                    current_section_rank = r_cand
+                    break
 
             # 4. 불릿 기호 기준으로 개별 발령 항목 쪼개기
             # 예: △건설부동산부장 김희준 △정치부 차장 박철수
             items = re.split(cls.BULLET_CHARS, line)
             for item in items:
                 item = item.strip()
-                if not item or len(item) < 3:
+                if not item or len(item) < 2:
+                    continue
+
+                # 4-1. 항목 단위 언론사 헤더 변경 감지 (한 줄에 여러 언론사가 연달아 나오는 경우, 예: ■매경미디어그룹 ◇매일경제신문 △... ◇MBN △...)
+                cand_media_clean = re.sub(r"^[<\[\(【\s]+|[>\]\)】\s]+$", "", item).strip()
+                if len(cand_media_clean) <= 15 and is_media_organization(cand_media_clean) and not any(cls.clean_name(t) for t in item.split()):
+                    current_media = normalize_media_name(cand_media_clean)
+                    continue
+
+                # 4-2. 항목 단위 발령 액션 및 섹션 직급 헤더 감지 (예: <부장대우 승진>, <승진>, <전보> 등)
+                clean_item_hdr = re.sub(r"^[<\[\(【\s]+|[>\]\)】\s]+$", "", item).strip()
+                item_has_header = False
+                for act_cand in ["승진", "전보", "보임", "보직", "선임", "신규선임", "전출", "전입", "파견", "퇴임", "위촉"]:
+                    if act_cand in clean_item_hdr:
+                        current_action = act_cand
+                        item_has_header = True
+                        break
+                for r_cand in SORTED_RANKS:
+                    if clean_item_hdr.startswith(r_cand) or f"{r_cand} 승진" in clean_item_hdr or f"{r_cand} 전보" in clean_item_hdr:
+                        current_section_rank = r_cand
+                        item_has_header = True
+                        break
+                if item_has_header and not any(cls.clean_name(t) for t in item.split()):
                     continue
 
                 # 이메일 추출
@@ -449,7 +484,13 @@ class PersonnelRegexParser:
                     rank_match = re.search(f"({RANK_REGEX_PATTERN})$", first)
                     if rank_match:
                         extracted_rank = rank_match.group(1)
-                        extracted_dept = first[:rank_match.start()].strip() or last_dept or "본사"
+                        dept_part = first[:rank_match.start()].strip()
+                        if dept_part:
+                            if (extracted_rank.startswith("부장") or extracted_rank.startswith("차장") or extracted_rank.startswith("팀장")) and not dept_part.endswith("부") and not dept_part.endswith("팀"):
+                                dept_part = dept_part + ("팀" if extracted_rank.startswith("팀장") else "부")
+                            extracted_dept = dept_part
+                        else:
+                            extracted_dept = last_dept or "본사"
                     elif first in RANK_HIERARCHY:
                         extracted_rank = first
                         extracted_dept = last_dept or "본사"
@@ -458,9 +499,30 @@ class PersonnelRegexParser:
                         extracted_rank = section_rank or "기자"
                     last_dept = extracted_dept
                 else:
-                    # 2개 이상 토큰이 남은 경우 (예: "건설부동산부" "부장")
-                    extracted_dept = other_tokens[0]
-                    extracted_rank = " ".join(other_tokens[1:])
+                    # 2개 이상 토큰이 남은 경우 (예: "건설부동산부" "부장", "편집국" "오피니언부", "편집국" "경제부" "차장")
+                    found_rank_idx = -1
+                    for r_i, tok in enumerate(other_tokens):
+                        if tok in RANK_HIERARCHY or re.search(f"({RANK_REGEX_PATTERN})$", tok):
+                            found_rank_idx = r_i
+                            break
+                    if found_rank_idx != -1:
+                        rank_tok = other_tokens[found_rank_idx]
+                        rank_m = re.search(f"({RANK_REGEX_PATTERN})$", rank_tok)
+                        if rank_m:
+                            extracted_rank = rank_m.group(1)
+                            prefix_dept = rank_tok[:rank_m.start()].strip()
+                            dept_tokens = list(other_tokens[:found_rank_idx])
+                            if prefix_dept:
+                                dept_tokens.append(prefix_dept)
+                            extracted_dept = " ".join(dept_tokens) if dept_tokens else (last_dept or "본사")
+                        else:
+                            extracted_rank = rank_tok
+                            dept_tokens = other_tokens[:found_rank_idx]
+                            extracted_dept = " ".join(dept_tokens) if dept_tokens else (last_dept or "본사")
+                    else:
+                        # 직급 토큰이 없는 경우 (예: "편집국" "오피니언부") -> 모두 부서로 간주, 직급은 section_rank
+                        extracted_dept = " ".join(other_tokens)
+                        extracted_rank = section_rank or "기자"
                     last_dept = extracted_dept
 
             # 3. 토큰이 1개로 붙어있는 경우 (예: "건설부동산부장김희준" or "홍길동정치부장")
@@ -489,6 +551,9 @@ class PersonnelRegexParser:
 
                 clean_dept = re.sub(r"^[△▲◇◆■◎\s]+", "", extracted_dept).strip()
                 clean_rank = re.sub(r"^[△▲◇◆■◎\s]+", "", extracted_rank).strip()
+                for bureau in ["편집국 ", "보도국 ", "논설실 ", "디지털뉴스국 ", "신문총괄 "]:
+                    if clean_dept.startswith(bureau) and len(clean_dept) > len(bureau):
+                        clean_dept = clean_dept[len(bureau):].strip()
                 if not clean_rank:
                     clean_rank = "기자"
 
@@ -1053,7 +1118,7 @@ class OnlineNewsTracker:
             if len(articles) >= max_items:
                 break
             try:
-                naver_url = f"https://m.search.naver.com/search.naver?where=m_news&query={encoded_query}&sort={n_sort}&ds={start_year}.01.01&de={end_year}.12.31"
+                naver_url = f"https://m.search.naver.com/search.naver?where=m_news&query={encoded_query}&sort={n_sort}&ds={start_year}.01.01&de={end_year}.12.31&nso=so:r,p:from{start_year}0101to{end_year}1231,a:all"
                 resp = requests.get(naver_url, headers=cls.HEADERS, timeout=6, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, "html.parser")
@@ -1081,8 +1146,8 @@ class OnlineNewsTracker:
             except Exception as e:
                 print(f"[Naver Search Error] {e}")
 
-        # 3. 구글 뉴스 RSS
-        if len(articles) < max_items:
+        # 3. 구글 뉴스 RSS (최신 연도 검색 시에만 fallback 활성화하여 과거 검색 오염 방지)
+        if end_year >= 2025 and len(articles) < max_items:
             try:
                 g_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
                 g_resp = requests.get(g_url, headers=cls.HEADERS, timeout=5, verify=False)
@@ -1207,76 +1272,92 @@ class OnlineNewsTracker:
         if not name:
             return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
 
-        # 30개년(1995~2026) 연대기 추적을 위한 최적화 포털 쿼리
-        queries = [
-            f'[인사] "{name}"',
-            f'<인사> "{name}"',
-            f'[인사] 신문 "{name}"',
-            f'[인사] 경제 "{name}"',
-            f'[인사] 일보 "{name}"',
-            f'[인사] 방송 "{name}"',
-            f'[인사] 통신 "{name}"',
-            f'[인사] {name}'
+        # 30개년(1995~2026) 연대기 분할 구간 설정:
+        # 단일 30년 검색 시 최신 기사에 밀려 묻히는 2024년 이전 과거 인사 기사를 확실하게 수집
+        intervals = [
+            (2024, 2026),
+            (2020, 2023),
+            (2010, 2019),
+            (1995, 2009)
         ]
 
         all_records = []
         searched_urls = set()
         article_count = 0
+        known_medias = set()
 
-        for q in queries:
+        for sy, ey in intervals:
             if stop_event and getattr(stop_event, "is_set", lambda: False)():
                 break
-            arts = cls.search_online_articles(
-                q, 
-                max_items=10, 
-                client_id=client_id, 
-                client_secret=client_secret, 
-                start_year=1995, 
-                end_year=2026
-            )
-            for art in arts:
+
+            interval_queries = [
+                f'[인사] "{name}"',
+                f'<인사> "{name}"',
+                f'[인사] 신문 "{name}"',
+                f'[인사] 경제 "{name}"',
+            ]
+            # 이미 발견된 소속 언론사가 있다면 과거 기사 탐색 쿼리 맨 앞에 우선 배치하여 정확도 극대화
+            for km in list(known_medias):
+                interval_queries.insert(0, f'[인사] {km} "{name}"')
+
+            for q in interval_queries:
                 if stop_event and getattr(stop_event, "is_set", lambda: False)():
                     break
-                # 1번 요청: 기사 제목이 [인사] 또는 <인사>인 인사기사만 엄격 필터링
-                if not is_personnel_article_title(art.get("title", "")):
-                    continue
-
-                u = art["url"]
-                if u in searched_urls:
-                    continue
-                searched_urls.add(u)
-                article_count += 1
-
-                fetched = cls.fetch_full_text(u)
-                body = fetched["text"]
-                if not body or len(body) < 30:
-                    continue
-                # 기자 이름이 본문에 없는 기사는 즉시 건너뜀 (고속 최적화)
-                if name not in body:
-                    continue
-
-                media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
-                article_pub_date = fetched.get("pub_date") or art.get("date_text") or "2020-01-01"
-
-                # 인사 발령문 파싱
-                recs = PersonnelRegexParser.parse_article_text(
-                    article_text=body,
-                    default_media=media,
-                    article_title=art["title"],
-                    pub_date=article_pub_date,
-                    article_url=u
+                arts = cls.search_online_articles(
+                    q, 
+                    max_items=8, 
+                    client_id=client_id, 
+                    client_secret=client_secret, 
+                    start_year=sy, 
+                    end_year=ey
                 )
-                matched_recs = [
-                    r for r in recs 
-                    if r["name"] == name and is_media_organization(r.get("media", ""))
-                ]
-                if matched_recs:
-                    for mr in matched_recs:
-                        if fetched["email"] and not mr.get("email"):
-                            mr["email"] = fetched["email"]
-                    all_records.extend(matched_recs)
+                for art in arts:
+                    if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                        break
+                    # 기사 제목이 [인사] 또는 <인사>인 인사기사만 엄격 필터링
+                    if not is_personnel_article_title(art.get("title", "")):
+                        continue
 
-            if len(all_records) >= 15:
+                    u = art["url"]
+                    if u in searched_urls:
+                        continue
+                    searched_urls.add(u)
+                    article_count += 1
+
+                    fetched = cls.fetch_full_text(u)
+                    body = fetched["text"]
+                    if not body or len(body) < 30:
+                        continue
+                    # 기자 이름이 본문에 없는 기사는 즉시 건너뜀 (고속 최적화)
+                    if name not in body:
+                        continue
+
+                    media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
+                    article_pub_date = fetched.get("pub_date") or art.get("date_text") or f"{sy}-01-01"
+
+                    # 인사 발령문 파싱
+                    recs = PersonnelRegexParser.parse_article_text(
+                        article_text=body,
+                        default_media=media,
+                        article_title=art["title"],
+                        pub_date=article_pub_date,
+                        article_url=u
+                    )
+                    matched_recs = [
+                        r for r in recs 
+                        if r["name"] == name and is_media_organization(r.get("media", ""))
+                    ]
+                    if matched_recs:
+                        for mr in matched_recs:
+                            if fetched["email"] and not mr.get("email"):
+                                mr["email"] = fetched["email"]
+                            if is_media_organization(mr.get("media", "")):
+                                known_medias.add(mr["media"])
+                        all_records.extend(matched_recs)
+
+                if len(all_records) >= 30:
+                    break
+            if len(all_records) >= 30:
                 break
 
         is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
