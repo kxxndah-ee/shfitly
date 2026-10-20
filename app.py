@@ -564,14 +564,8 @@ with tab_search:
                     name_clean = search_name_input.strip()
                     if name_clean:
                         st.session_state["active_search_name"] = name_clean
-                        # 1단계: 로컬 DB에 등록된 언론인인지 즉시 확인
-                        matched_in_db = [r for r in all_reporters if name_clean in r["name"]]
-                        if matched_in_db:
-                            st.session_state["is_searching_name"] = False
-                            st.session_state["upload_banner"] = f"DB에서 '{name_clean}' 기자 {len(matched_in_db)}명의 발령 기록을 조회했습니다."
-                        else:
-                            # DB에 없으면 온라인 기사 실시간 크롤링 자동 시작
-                            st.session_state["is_searching_name"] = True
+                        # 무조건 실시간 온라인 검색을 디폴트로 실행
+                        st.session_state["is_searching_name"] = True
                         st.rerun()
                     else:
                         st.warning("검색할 기자 이름을 입력해주세요.")
@@ -651,15 +645,8 @@ with tab_search:
                     st.session_state["filter_rank_val"] = r_clean
 
                     if m_clean or d_clean or r_clean:
-                        # 1단계: 로컬 DB에 일치하는 기록이 있는지 확인
-                        matched_recs = db.search_records(media=m_clean, dept=d_clean, rank=r_clean)
-                        matched_reps = db.search_reporters(media=m_clean, dept=d_clean, rank=r_clean)
-                        if matched_recs or matched_reps:
-                            st.session_state["is_searching_media"] = False
-                            st.session_state["upload_banner"] = f"DB에서 발령 기록 {len(matched_recs)}건(언론인 {len(matched_reps)}명)을 조회했습니다."
-                        else:
-                            # DB에 없으면 온라인 크롤링 자동 시작
-                            st.session_state["is_searching_media"] = True
+                        # 무조건 실시간 온라인 검색을 디폴트로 실행
+                        st.session_state["is_searching_media"] = True
                         st.rerun()
 
         if is_searching_media:
@@ -727,52 +714,31 @@ with tab_search:
     if active_name:
         matched_reporters = [r for r in filtered_reporters if active_name in r["name"]] if filtered_reporters else [r for r in all_reporters if active_name in r["name"]]
         if matched_reporters:
-            col_sel, col_online = st.columns([3, 1.2], vertical_alignment="bottom")
-            with col_sel:
-                if len(matched_reporters) > 1:
-                    options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
-                    selected_label = st.selectbox(
-                        f"인물 선택 : 검색된 기자 {len(matched_reporters)}명",
-                        options=list(options_dict.keys())
-                    )
-                    selected_reporter_id = options_dict[selected_label]
-                else:
-                    selected_reporter_id = matched_reporters[0]["reporter_id"]
-                    st.caption(f"선택된 언론인: **{matched_reporters[0]['display_label']}**")
-            with col_online:
-                if st.button("30개년 온라인 추가 탐색", key="btn_crawl_more_name", use_container_width=True, help="포털 30개년 [인사]/<인사> 기사를 실시간 추가 탐색하여 누적합니다."):
-                    st.session_state["is_searching_name"] = True
-                    st.rerun()
+            if len(matched_reporters) > 1:
+                options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
+                selected_label = st.selectbox(
+                    f"인물 선택 : 검색된 기자 {len(matched_reporters)}명",
+                    options=list(options_dict.keys())
+                )
+                selected_reporter_id = options_dict[selected_label]
+            else:
+                selected_reporter_id = matched_reporters[0]["reporter_id"]
+                st.caption(f"선택된 언론인: **{matched_reporters[0]['display_label']}**")
         else:
-            col_info, col_online_btn = st.columns([3, 1.2], vertical_alignment="center")
-            with col_info:
-                st.info(f"DB에 '{active_name}' 기자의 기록이 없습니다. 온라인 기사를 실시간 탐색해보세요.")
-            with col_online_btn:
-                if st.button("30개년 온라인 실시간 검색", key="btn_crawl_name_retry", use_container_width=True):
-                    st.session_state["is_searching_name"] = True
-                    st.rerun()
+            st.info(f"온라인 인사 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
     elif filtered_reporters:
-        col_sel, col_online = st.columns([3, 1.2], vertical_alignment="bottom")
-        with col_sel:
+        if len(filtered_reporters) > 1:
             options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
             selected_label = st.selectbox(
                 f"인물 선택 : 검색된 언론인 {len(filtered_reporters)}명",
                 options=list(options_dict.keys())
             )
             selected_reporter_id = options_dict[selected_label]
-        with col_online:
-            if search_mode == "매체 및 부서별 검색" and (m_val or d_val or r_val):
-                if st.button("30개년 온라인 추가 탐색", key="btn_crawl_more_media", use_container_width=True, help="해당 조건의 30개년 온라인 [인사]/<인사> 기사를 실시간 추가 탐색합니다."):
-                    st.session_state["is_searching_media"] = True
-                    st.rerun()
+        else:
+            selected_reporter_id = filtered_reporters[0]["reporter_id"]
+            st.caption(f"선택된 언론인: **{filtered_reporters[0]['display_label']}**")
     elif search_mode == "매체 및 부서별 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val")):
-        col_info, col_online_btn = st.columns([3, 1.2], vertical_alignment="center")
-        with col_info:
-            st.info("조건에 부합하는 언론인 기록이 없습니다. 30개년 온라인 기사를 탐색해보세요.")
-        with col_online_btn:
-            if st.button("30개년 온라인 실시간 검색", key="btn_crawl_media_retry", use_container_width=True):
-                st.session_state["is_searching_media"] = True
-                st.rerun()
+        st.info("조건에 부합하는 온라인 인사 발령 기록을 찾지 못했습니다.")
 
     # 인사 소식 (발령 명단) 테이블 표시 - 이름 검색 또는 매체/부서별 검색 결과 공통
     if matched_records:
