@@ -518,7 +518,7 @@ with tab_search:
                 st.session_state["upload_banner"] = res["message"]
                 st.rerun()
 
-    all_reporters = db.get_all_reporters()
+    all_reporters = [r for r in db.get_all_reporters() if not is_media_organization(r["name"])]
 
     # 1. 이름 검색 (폰트 및 사이즈는 매체 및 부서별 검색과 동일)
     if search_mode == "이름 검색":
@@ -698,15 +698,27 @@ with tab_search:
     if search_mode == "이름 검색":
         active_name = st.session_state.get("active_search_name", "")
         filtered_reporters = all_reporters
-        matched_records = []
+        if active_name:
+            matched_records = [
+                r for r in db.search_records(name=active_name)
+                if is_media_organization(r.get("media", "")) and is_personnel_article_title(r.get("article_title", ""))
+            ]
+        else:
+            matched_records = []
     else:
         active_name = ""
         m_val = st.session_state.get("filter_media_val", "")
         d_val = st.session_state.get("filter_dept_val", "")
         r_val = st.session_state.get("filter_rank_val", "")
         if m_val or d_val or r_val:
-            filtered_reporters = db.search_reporters(media=m_val, dept=d_val, rank=r_val)
-            matched_records = db.search_records(media=m_val, dept=d_val, rank=r_val)
+            filtered_reporters = [
+                r for r in db.search_reporters(media=m_val, dept=d_val, rank=r_val)
+                if not is_media_organization(r["name"])
+            ]
+            matched_records = [
+                r for r in db.search_records(media=m_val, dept=d_val, rank=r_val)
+                if is_media_organization(r.get("media", "")) and is_personnel_article_title(r.get("article_title", ""))
+            ]
         else:
             filtered_reporters = all_reporters
             matched_records = []
@@ -753,33 +765,6 @@ with tab_search:
                 if st.button("30개년 온라인 추가 탐색", key="btn_crawl_more_media", use_container_width=True, help="해당 조건의 30개년 온라인 [인사]/<인사> 기사를 실시간 추가 탐색합니다."):
                     st.session_state["is_searching_media"] = True
                     st.rerun()
-
-        # 매체/부서별 검색 결과인 경우 발령 명단 테이블 추가 표시
-        if search_mode == "매체 및 부서별 검색" and matched_records:
-            st.markdown("##### 발령 명단")
-            df_display = pd.DataFrame([{
-                "발령일자": r.get("pub_date", ""),
-                "언론사": r.get("media", ""),
-                "부서": r.get("dept", ""),
-                "직급": r.get("rank_title", ""),
-                "성명": r.get("name", ""),
-                "발령구분": r.get("action_type", ""),
-                "기사원문(링크주소)": r.get("article_url", "")
-            } for r in matched_records[:50]])
-            st.dataframe(
-                df_display,
-                column_config={
-                    "기사원문(링크주소)": st.column_config.LinkColumn(
-                        "기사원문(링크주소)",
-                        help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
-                        validate=r"^https?://.*",
-                        max_chars=60,
-                        display_text="기사 원문 열기"
-                    )
-                },
-                use_container_width=True, 
-                hide_index=True
-            )
     elif search_mode == "매체 및 부서별 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val")):
         col_info, col_online_btn = st.columns([3, 1.2], vertical_alignment="center")
         with col_info:
@@ -788,6 +773,33 @@ with tab_search:
             if st.button("30개년 온라인 실시간 검색", key="btn_crawl_media_retry", use_container_width=True):
                 st.session_state["is_searching_media"] = True
                 st.rerun()
+
+    # 인사 소식 (발령 명단) 테이블 표시 - 이름 검색 또는 매체/부서별 검색 결과 공통
+    if matched_records:
+        st.markdown("##### 인사 소식")
+        df_display = pd.DataFrame([{
+            "언론사": r.get("media", ""),
+            "발령구분": r.get("action_type", "발령"),
+            "부서": r.get("dept", ""),
+            "직급": r.get("rank_title", ""),
+            "성명": r.get("name", ""),
+            "발령일자": r.get("pub_date", ""),
+            "기사원문(링크주소)": r.get("article_url", "")
+        } for r in matched_records[:50]])
+        st.dataframe(
+            df_display,
+            column_config={
+                "기사원문(링크주소)": st.column_config.LinkColumn(
+                    "기사원문(링크주소)",
+                    help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
+                    validate=r"^https?://.*",
+                    max_chars=60,
+                    display_text="기사 원문 열기"
+                )
+            },
+            use_container_width=True, 
+            hide_index=True
+        )
 
     # 선택된 기자의 상세 프로필 및 타임라인 렌더링
     if selected_reporter_id:

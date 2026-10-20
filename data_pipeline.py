@@ -212,9 +212,12 @@ NON_MEDIA_KEYWORDS: List[str] = [
     "문체부", "농림축산", "농식품부", "산업통상", "산업부", "복지부", "환경부", "고용노동부", "노동부", "여가부",
     "국토교통부", "국토부", "해수부", "중기부", "국세청", "관세청", "조달청", "통계청", "검찰청", "검찰", "경찰청", "경찰",
     "소방청", "문화재청", "산림청", "특허청", "기상청", "해경", "감사원", "국정원", "금감원", "금융위", "공정위", "방통위",
-    "시청", "도청", "구청", "군청", "공사", "공단", "연구원", "진흥원", "재단", "은행", "금융지주", "증권", "생명", "화재",
-    "카드", "보험", "캐피탈", "대학교", "대학원", "대학", "병원", "의료원", "건설", "전자", "물산", "중공업", "화학",
-    "모빌리티", "자동차", "항공", "엔지니어링", "제약", "바이오", "백화점", "쇼핑", "호텔"
+    "시청", "도청", "구청", "군청", "공사", "공단", "연구원", "진흥원", "재단", "은행", "금융지주", "증권사", "생명", "화재",
+    "카드", "보험", "캐피탈", "대학교", "대학원", "대학", "병원", "의료원", "의학원", "원자력",
+    "건설사", "현대건설", "대우건설", "gs건설", "포스코건설", "삼성전자", "lg전자", "전자공업",
+    "물산", "중공업", "화학", "모빌리티", "자동차", "항공", "엔지니어링", "제약사", "백화점", "쇼핑", "호텔",
+    "서울시", "부산시", "인천시", "대구시", "광주시", "대전시", "울산시", "세종시", "경기도", "강원도",
+    "충북도", "충남도", "전북도", "전남도", "경북도", "경남도", "제주도", "안동시", "과기", "과학기술", "재정경제", "행정안전"
 ]
 
 
@@ -223,7 +226,7 @@ def is_media_organization(name: str) -> bool:
     if not name:
         return False
     n = name.lower().strip()
-    if n in ["2010년", "2011년", "제1", "미상"]:
+    if n in ["2010년", "2011년", "제1", "미상", "온라인뉴스", "뉴스", "언론사", "기자", "본사", "지사", "편집국", "보도국"]:
         return False
     for nmk in NON_MEDIA_KEYWORDS:
         if nmk in n:
@@ -236,41 +239,29 @@ def is_media_organization(name: str) -> bool:
 
 def is_personnel_article_title(title: str, text: str = "") -> bool:
     """
-    기사 제목이 [인사] 또는 <인사> 형태의 공식 인사 기사이며,
-    정부/금융/일반기업이 아닌 '언론사 인사소식' 기사인지 엄격 검증합니다.
+    기사 제목이 [인사] 또는 <인사> 형태의 공식 인사 기사인지 검증합니다.
+    비언론사(정부부처/지자체/금융기관/기업) 인사 제목은 배제합니다.
     """
     if not title:
         return False
     t = html.unescape(str(title)).replace(" ", "")
-    is_personnel = ("[인사]" in t) or ("<인사>" in t) or ("【인사】" in t) or ("(인사)" in t)
+    is_personnel = (
+        ("[인사" in t) or ("<인사" in t) or ("【인사" in t) or ("(인사" in t) or 
+        ("인사종합" in t) or ("오늘의인사" in t) or ("인사]" in t) or ("인사>" in t) or ("인사】" in t)
+    )
     if not is_personnel:
         return False
 
     t_lower = html.unescape(str(title)).lower()
+    for mk in ["전자신문", "건설경제", "바이오스펙테이터", "바이오타임즈", "메디칼타임즈", "약업신문"]:
+        if mk in t_lower:
+            return True
+
     for nmk in NON_MEDIA_KEYWORDS:
         if nmk in t_lower:
             return False
 
-    for mk in MEDIA_KEYWORDS:
-        if mk in t_lower:
-            return True
-
-    if text:
-        text_lower = text.lower()
-        has_media_dept = any(k in text_lower for k in ["편집국", "보도국", "보도본부", "논설위원", "정치부", "사회부", "경제부", "기자", "특파원", "데스크"])
-        if has_media_dept:
-            return True
-
-    title_match = re.search(r"(?:\[인사\]|<인사>|【인사】|\(인사\))\s*([가-힣A-Za-z0-9]+)", html.unescape(str(title)))
-    if title_match:
-        org_cand = title_match.group(1).strip()
-        if is_media_organization(org_cand):
-            return True
-
-    if t in ["[인사]", "<인사>", "【인사】"]:
-        return True
-
-    return False
+    return True
 
 
 # ==========================================
@@ -311,6 +302,8 @@ class PersonnelRegexParser:
         if not re.fullmatch(r"[가-힣]{2,4}", name):
             return None
         if name in STOPWORDS:
+            return None
+        if is_media_organization(name):
             return None
         return name
 
@@ -1214,72 +1207,77 @@ class OnlineNewsTracker:
         if not name:
             return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
 
-        # 30개년(1995~2026) 연대기 추적을 위한 연도별 구간(Multi-window) 분할 탐색
-        intervals = [
-            (2020, 2026),  # 최근 발령 (6개년)
-            (2012, 2019),  # 중기 발령 (8개년)
-            (1995, 2011)   # 초기 발령 (17개년)
+        # 30개년(1995~2026) 연대기 추적을 위한 최적화 포털 쿼리
+        queries = [
+            f'[인사] "{name}"',
+            f'<인사> "{name}"',
+            f'[인사] 신문 "{name}"',
+            f'[인사] 경제 "{name}"',
+            f'[인사] 일보 "{name}"',
+            f'[인사] 방송 "{name}"',
+            f'[인사] 통신 "{name}"',
+            f'[인사] {name}'
         ]
 
         all_records = []
         searched_urls = set()
         article_count = 0
 
-        for sy, ey in intervals:
+        for q in queries:
             if stop_event and getattr(stop_event, "is_set", lambda: False)():
                 break
-            queries = [
-                f'"{name}" "[인사]"',
-                f'"{name}" "<인사>"',
-                f'"{name}" 인사'
-            ]
-
-            for q in queries:
+            arts = cls.search_online_articles(
+                q, 
+                max_items=10, 
+                client_id=client_id, 
+                client_secret=client_secret, 
+                start_year=1995, 
+                end_year=2026
+            )
+            for art in arts:
                 if stop_event and getattr(stop_event, "is_set", lambda: False)():
                     break
-                arts = cls.search_online_articles(
-                    q, 
-                    max_items=8, 
-                    client_id=client_id, 
-                    client_secret=client_secret, 
-                    start_year=sy, 
-                    end_year=ey
+                # 1번 요청: 기사 제목이 [인사] 또는 <인사>인 인사기사만 엄격 필터링
+                if not is_personnel_article_title(art.get("title", "")):
+                    continue
+
+                u = art["url"]
+                if u in searched_urls:
+                    continue
+                searched_urls.add(u)
+                article_count += 1
+
+                fetched = cls.fetch_full_text(u)
+                body = fetched["text"]
+                if not body or len(body) < 30:
+                    continue
+                # 기자 이름이 본문에 없는 기사는 즉시 건너뜀 (고속 최적화)
+                if name not in body:
+                    continue
+
+                media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
+                article_pub_date = fetched.get("pub_date") or art.get("date_text") or "2020-01-01"
+
+                # 인사 발령문 파싱
+                recs = PersonnelRegexParser.parse_article_text(
+                    article_text=body,
+                    default_media=media,
+                    article_title=art["title"],
+                    pub_date=article_pub_date,
+                    article_url=u
                 )
-                for art in arts:
-                    if stop_event and getattr(stop_event, "is_set", lambda: False)():
-                        break
-                    # 1번 요청: 기사 제목이 [인사] 또는 <인사>인 인사기사만 엄격 필터링
-                    if not is_personnel_article_title(art.get("title", "")):
-                        continue
+                matched_recs = [
+                    r for r in recs 
+                    if r["name"] == name and is_media_organization(r.get("media", ""))
+                ]
+                if matched_recs:
+                    for mr in matched_recs:
+                        if fetched["email"] and not mr.get("email"):
+                            mr["email"] = fetched["email"]
+                    all_records.extend(matched_recs)
 
-                    u = art["url"]
-                    if u in searched_urls:
-                        continue
-                    searched_urls.add(u)
-                    article_count += 1
-
-                    fetched = cls.fetch_full_text(u)
-                    body = fetched["text"]
-                    if not body or len(body) < 30:
-                        continue
-
-                    media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
-                    article_pub_date = fetched.get("pub_date") or art.get("date_text") or f"{sy}-06-30"
-
-                    # 인사 발령문 파싱
-                    recs = PersonnelRegexParser.parse_article_text(
-                        article_text=body,
-                        default_media=media,
-                        article_title=art["title"],
-                        pub_date=article_pub_date,
-                        article_url=u
-                    )
-                    matched_recs = [r for r in recs if r["name"] == name]
-                    if matched_recs:
-                        for mr in matched_recs:
-                            if fetched["email"] and not mr.get("email"):
-                                mr["email"] = fetched["email"]
-                        all_records.extend(matched_recs)
+            if len(all_records) >= 15:
+                break
 
         is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
         if all_records:
@@ -1326,83 +1324,77 @@ class OnlineNewsTracker:
         # 검색 쿼리 구성 ([인사] 및 <인사> 기사 대상)
         query_parts = []
         if media_clean:
-            query_parts.append(f'"{media_clean}"')
+            query_parts.append(media_clean)
         if dept_clean:
-            query_parts.append(f'"{dept_clean}"')
+            query_parts.append(dept_clean)
         if rank_clean:
-            query_parts.append(f'"{rank_clean}"')
+            query_parts.append(rank_clean)
 
-        if not query_parts:
-            query_parts = ['"언론사"']
-
-        main_kw = " ".join(query_parts)
+        main_kw = " ".join(query_parts) if query_parts else "언론사"
         queries = [
-            f'{main_kw} "[인사]"',
-            f'{main_kw} "<인사>"',
-            f'{main_kw} 인사'
+            f'[인사] {main_kw}',
+            f'<인사> {main_kw}',
         ]
-
-        intervals = [
-            (2022, 2026),  # 최근 발령 (5개년)
-            (2015, 2021),  # 중기 발령 (7개년)
-            (1995, 2014)   # 과거 발령 (20개년)
-        ]
+        if media_clean:
+            queries.append(f'[인사] {media_clean}')
 
         all_records = []
         searched_urls = set()
         article_count = 0
 
-        for sy, ey in intervals:
+        for q in queries:
             if stop_event and getattr(stop_event, "is_set", lambda: False)():
                 break
-            for q in queries:
+            arts = cls.search_online_articles(
+                q, 
+                max_items=12, 
+                client_id=client_id, 
+                client_secret=client_secret, 
+                start_year=1995, 
+                end_year=2026
+            )
+            for art in arts:
                 if stop_event and getattr(stop_event, "is_set", lambda: False)():
                     break
-                arts = cls.search_online_articles(
-                    q, 
-                    max_items=8, 
-                    client_id=client_id, 
-                    client_secret=client_secret, 
-                    start_year=sy, 
-                    end_year=ey
+                if not is_personnel_article_title(art.get("title", "")):
+                    continue
+                u = art["url"]
+                if u in searched_urls:
+                    continue
+                searched_urls.add(u)
+                article_count += 1
+
+                fetched = cls.fetch_full_text(u)
+                body = fetched.get("text", "")
+                if not body or len(body) < 30:
+                    continue
+
+                art_media = fetched.get("media") if fetched.get("media") != "온라인뉴스" else (media_clean or art.get("media"))
+                pub_date = fetched.get("pub_date") or art.get("date_text") or "2020-01-01"
+
+                recs = PersonnelRegexParser.parse_article_text(
+                    article_text=body,
+                    default_media=art_media,
+                    article_title=art["title"],
+                    pub_date=pub_date,
+                    article_url=u
                 )
-                for art in arts:
-                    if stop_event and getattr(stop_event, "is_set", lambda: False)():
-                        break
-                    if not is_personnel_article_title(art.get("title", "")):
+                for r in recs:
+                    if not is_media_organization(r.get("media", "")):
                         continue
-                    u = art["url"]
-                    if u in searched_urls:
-                        continue
-                    searched_urls.add(u)
-                    article_count += 1
-
-                    fetched = cls.fetch_full_text(u)
-                    body = fetched.get("text", "")
-                    if not body or len(body) < 30:
-                        continue
-
-                    art_media = fetched.get("media") if fetched.get("media") != "온라인뉴스" else (media_clean or art.get("media"))
-                    pub_date = fetched.get("pub_date") or art.get("date_text") or f"{sy}-06-30"
-
-                    recs = PersonnelRegexParser.parse_article_text(
-                        article_text=body,
-                        default_media=art_media,
-                        article_title=art["title"],
-                        pub_date=pub_date,
-                        article_url=u
-                    )
-                    for r in recs:
-                        if media_clean and media_clean not in r.get("media", ""):
-                            if media_clean in art["title"]:
-                                r["media"] = normalize_media_name(media_clean)
-                            else:
-                                continue
-                        if dept_clean and dept_clean not in r.get("dept", ""):
+                    if media_clean and media_clean not in r.get("media", ""):
+                        if media_clean in art["title"]:
+                            r["media"] = normalize_media_name(media_clean)
+                        else:
                             continue
-                        if rank_clean and rank_clean not in r.get("rank_title", ""):
-                            continue
-                        all_records.append(r)
+                    if dept_clean and dept_clean not in r.get("dept", ""):
+                        continue
+                    if rank_clean and rank_clean not in r.get("rank_title", ""):
+                        continue
+                    all_records.append(r)
+
+            if len(all_records) >= 20:
+                break
 
         is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
         if all_records:
