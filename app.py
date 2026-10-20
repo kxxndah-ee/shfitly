@@ -31,6 +31,7 @@ from data_pipeline import (
     generate_career_profile_metrics,
     generate_career_excel,
     is_personnel_article_title,
+    is_media_organization,
     DOMAIN_TAXONOMY,
     RANK_HIERARCHY
 )
@@ -517,6 +518,8 @@ with tab_search:
                 st.session_state["upload_banner"] = res["message"]
                 st.rerun()
 
+    all_reporters = db.get_all_reporters()
+
     # 1. 이름 검색 (폰트 및 사이즈는 매체 및 부서별 검색과 동일)
     if search_mode == "이름 검색":
         st.markdown("##### 이름 검색")
@@ -560,8 +563,15 @@ with tab_search:
                 if search_submitted:
                     name_clean = search_name_input.strip()
                     if name_clean:
-                        st.session_state["is_searching_name"] = True
                         st.session_state["active_search_name"] = name_clean
+                        # 1단계: 로컬 DB에 등록된 언론인인지 즉시 확인
+                        matched_in_db = [r for r in all_reporters if name_clean in r["name"]]
+                        if matched_in_db:
+                            st.session_state["is_searching_name"] = False
+                            st.session_state["upload_banner"] = f"DB에서 '{name_clean}' 기자 {len(matched_in_db)}명의 발령 기록을 조회했습니다."
+                        else:
+                            # DB에 없으면 온라인 기사 실시간 크롤링 자동 시작
+                            st.session_state["is_searching_name"] = True
                         st.rerun()
                     else:
                         st.warning("검색할 기자 이름을 입력해주세요.")
@@ -641,7 +651,15 @@ with tab_search:
                     st.session_state["filter_rank_val"] = r_clean
 
                     if m_clean or d_clean or r_clean:
-                        st.session_state["is_searching_media"] = True
+                        # 1단계: 로컬 DB에 일치하는 기록이 있는지 확인
+                        matched_recs = db.search_records(media=m_clean, dept=d_clean, rank=r_clean)
+                        matched_reps = db.search_reporters(media=m_clean, dept=d_clean, rank=r_clean)
+                        if matched_recs or matched_reps:
+                            st.session_state["is_searching_media"] = False
+                            st.session_state["upload_banner"] = f"DB에서 발령 기록 {len(matched_recs)}건(언론인 {len(matched_reps)}명)을 조회했습니다."
+                        else:
+                            # DB에 없으면 온라인 크롤링 자동 시작
+                            st.session_state["is_searching_media"] = True
                         st.rerun()
 
         if is_searching_media:
@@ -675,7 +693,6 @@ with tab_search:
                     st.session_state["upload_banner"] = res.get("message", "검색이 완료되었습니다.")
                     st.rerun()
 
-    all_reporters = db.get_all_reporters()
     selected_reporter_id = None
 
     if search_mode == "이름 검색":
@@ -698,24 +715,44 @@ with tab_search:
     if active_name:
         matched_reporters = [r for r in filtered_reporters if active_name in r["name"]] if filtered_reporters else [r for r in all_reporters if active_name in r["name"]]
         if matched_reporters:
-            if len(matched_reporters) > 1:
-                options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
-                selected_label = st.selectbox(
-                    f"인물 선택 : 검색된 기자 {len(matched_reporters)}명",
-                    options=list(options_dict.keys())
-                )
-                selected_reporter_id = options_dict[selected_label]
-            else:
-                selected_reporter_id = matched_reporters[0]["reporter_id"]
+            col_sel, col_online = st.columns([3, 1.2], vertical_alignment="bottom")
+            with col_sel:
+                if len(matched_reporters) > 1:
+                    options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
+                    selected_label = st.selectbox(
+                        f"인물 선택 : 검색된 기자 {len(matched_reporters)}명",
+                        options=list(options_dict.keys())
+                    )
+                    selected_reporter_id = options_dict[selected_label]
+                else:
+                    selected_reporter_id = matched_reporters[0]["reporter_id"]
+                    st.caption(f"선택된 언론인: **{matched_reporters[0]['display_label']}**")
+            with col_online:
+                if st.button("30개년 온라인 추가 탐색", key="btn_crawl_more_name", use_container_width=True, help="포털 30개년 [인사]/<인사> 기사를 실시간 추가 탐색하여 누적합니다."):
+                    st.session_state["is_searching_name"] = True
+                    st.rerun()
         else:
-            st.info(f"온라인 [인사]/<인사> 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다. 다른 이름으로 검색해보세요.")
+            col_info, col_online_btn = st.columns([3, 1.2], vertical_alignment="center")
+            with col_info:
+                st.info(f"DB에 '{active_name}' 기자의 기록이 없습니다. 온라인 기사를 실시간 탐색해보세요.")
+            with col_online_btn:
+                if st.button("30개년 온라인 실시간 검색", key="btn_crawl_name_retry", use_container_width=True):
+                    st.session_state["is_searching_name"] = True
+                    st.rerun()
     elif filtered_reporters:
-        options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
-        selected_label = st.selectbox(
-            f"인물 선택 : 검색된 언론인 {len(filtered_reporters)}명",
-            options=list(options_dict.keys())
-        )
-        selected_reporter_id = options_dict[selected_label]
+        col_sel, col_online = st.columns([3, 1.2], vertical_alignment="bottom")
+        with col_sel:
+            options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
+            selected_label = st.selectbox(
+                f"인물 선택 : 검색된 언론인 {len(filtered_reporters)}명",
+                options=list(options_dict.keys())
+            )
+            selected_reporter_id = options_dict[selected_label]
+        with col_online:
+            if search_mode == "매체 및 부서별 검색" and (m_val or d_val or r_val):
+                if st.button("30개년 온라인 추가 탐색", key="btn_crawl_more_media", use_container_width=True, help="해당 조건의 30개년 온라인 [인사]/<인사> 기사를 실시간 추가 탐색합니다."):
+                    st.session_state["is_searching_media"] = True
+                    st.rerun()
 
         # 매체/부서별 검색 결과인 경우 발령 명단 테이블 추가 표시
         if search_mode == "매체 및 부서별 검색" and matched_records:
@@ -727,11 +764,30 @@ with tab_search:
                 "직급": r.get("rank_title", ""),
                 "성명": r.get("name", ""),
                 "발령구분": r.get("action_type", ""),
-                "기사제목": r.get("article_title", "")
+                "기사원문(링크주소)": r.get("article_url", "")
             } for r in matched_records[:50]])
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            st.dataframe(
+                df_display,
+                column_config={
+                    "기사원문(링크주소)": st.column_config.LinkColumn(
+                        "기사원문(링크주소)",
+                        help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
+                        validate=r"^https?://.*",
+                        max_chars=60,
+                        display_text="기사 원문 열기"
+                    )
+                },
+                use_container_width=True, 
+                hide_index=True
+            )
     elif search_mode == "매체 및 부서별 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val")):
-        st.info("조건에 부합하는 언론인 기록이 없습니다. 매체명이나 부서명을 다시 확인해주세요.")
+        col_info, col_online_btn = st.columns([3, 1.2], vertical_alignment="center")
+        with col_info:
+            st.info("조건에 부합하는 언론인 기록이 없습니다. 30개년 온라인 기사를 탐색해보세요.")
+        with col_online_btn:
+            if st.button("30개년 온라인 실시간 검색", key="btn_crawl_media_retry", use_container_width=True):
+                st.session_state["is_searching_media"] = True
+                st.rerun()
 
     # 선택된 기자의 상세 프로필 및 타임라인 렌더링
     if selected_reporter_id:
@@ -990,11 +1046,19 @@ with tab_monitoring:
         summary_data = db.get_daily_personnel_summary("")
         is_showing_fallback = True
 
-    # [인사] 또는 <인사> 기사만 엄격 필터링
-    all_raw_recs = [r for r in summary_data["raw_records"] if is_personnel_article_title(r.get("article_title", ""))]
+    # [인사] 또는 <인사> 기사 중 언론사 인사소식만 엄격 필터링
+    all_raw_recs = [
+        r for r in summary_data["raw_records"] 
+        if is_personnel_article_title(r.get("article_title", "")) and is_media_organization(r.get("media", ""))
+    ]
     media_news_list = []
     for mn in summary_data["media_news"]:
-        valid_recs = [r for r in mn.get("records", []) if is_personnel_article_title(r.get("article_title", ""))]
+        if not is_media_organization(mn.get("media", "")):
+            continue
+        valid_recs = [
+            r for r in mn.get("records", []) 
+            if is_personnel_article_title(r.get("article_title", "")) and is_media_organization(r.get("media", ""))
+        ]
         if valid_recs:
             by_act = {}
             for r in valid_recs:
@@ -1152,7 +1216,7 @@ with tab_monitoring:
 
         # 전체 명단 표 & 다운로드
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 발령 전체 명단")
+        st.markdown("#### 인사 소식")
         
         table_rows = []
         for r in all_raw_recs:
@@ -1163,20 +1227,33 @@ with tab_monitoring:
                 "직급": r.get("rank_title", ""),
                 "성명": r.get("name", ""),
                 "발령일자": r.get("pub_date", ""),
-                "기사제목": r.get("article_title", "")
+                "기사원문(링크주소)": r.get("article_url", "")
             })
         
         if table_rows:
             df_table = pd.DataFrame(table_rows)
-            st.dataframe(df_table, use_container_width=True, hide_index=True)
+            st.dataframe(
+                df_table,
+                column_config={
+                    "기사원문(링크주소)": st.column_config.LinkColumn(
+                        "기사원문(링크주소)",
+                        help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
+                        validate=r"^https?://.*",
+                        max_chars=60,
+                        display_text="기사 원문 열기"
+                    )
+                },
+                use_container_width=True, 
+                hide_index=True
+            )
 
             # 엑셀 다운로드
             dl_buf = io.BytesIO()
             with pd.ExcelWriter(dl_buf, engine="openpyxl") as writer:
-                df_table.to_excel(writer, sheet_name="당일인사소식", index=False)
+                df_table.to_excel(writer, sheet_name="인사소식", index=False)
             
             st.download_button(
-                "당일 인사 소식 엑셀 다운로드",
+                "인사 소식 엑셀 다운로드",
                 data=dl_buf.getvalue(),
                 file_name=f"{date_str}_언론사인사소식.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

@@ -199,12 +199,78 @@ def parse_rank_level(rank_title: str) -> int:
     return best_level
 
 
-def is_personnel_article_title(title: str) -> bool:
-    """기사 제목이 [인사] 또는 <인사> (및 대괄호/화살괄호 변형)인 공식 인사 기사인지 엄격 검증."""
+MEDIA_KEYWORDS: List[str] = [
+    "신문", "일보", "방송", "뉴스", "통신", "경제", "미디어", "타임스", "타임즈", "저널", "데일리", "헤럴드", "프레스",
+    "tv", "kbs", "mbc", "sbs", "ytn", "jtbc", "tv조선", "채널a", "mbn", "ebs", "cbs", "bbs", "tbs",
+    "연합뉴스", "뉴스1", "뉴시스", "한겨레", "오마이뉴스", "프레시안", "노컷뉴스", "더팩트", "아이뉴스24", "지디넷",
+    "조선비즈", "매경", "한경", "서경", "아경", "머니투데이", "이데일리", "디지털타임스", "전자신문", "조세일보", "스포츠조선",
+    "스포츠동아", "스포츠서울", "스포츠경향", "일간스포츠", "시사in", "시사저널", "주간조선", "주간동아", "한겨레21"
+]
+
+NON_MEDIA_KEYWORDS: List[str] = [
+    "부처", "기획재정부", "교육부", "과기정통부", "외교부", "통일부", "법무부", "국방부", "행안부", "보훈부",
+    "문체부", "농림축산", "농식품부", "산업통상", "산업부", "복지부", "환경부", "고용노동부", "노동부", "여가부",
+    "국토교통부", "국토부", "해수부", "중기부", "국세청", "관세청", "조달청", "통계청", "검찰청", "검찰", "경찰청", "경찰",
+    "소방청", "문화재청", "산림청", "특허청", "기상청", "해경", "감사원", "국정원", "금감원", "금융위", "공정위", "방통위",
+    "시청", "도청", "구청", "군청", "공사", "공단", "연구원", "진흥원", "재단", "은행", "금융지주", "증권", "생명", "화재",
+    "카드", "보험", "캐피탈", "대학교", "대학원", "대학", "병원", "의료원", "건설", "전자", "물산", "중공업", "화학",
+    "모빌리티", "자동차", "항공", "엔지니어링", "제약", "바이오", "백화점", "쇼핑", "호텔"
+]
+
+
+def is_media_organization(name: str) -> bool:
+    """해당 기관/조직명이 언론사(신문/방송/통신/인터넷매체)인지 정밀 판별합니다."""
+    if not name:
+        return False
+    n = name.lower().strip()
+    if n in ["2010년", "2011년", "제1", "미상"]:
+        return False
+    for nmk in NON_MEDIA_KEYWORDS:
+        if nmk in n:
+            return False
+    for mk in MEDIA_KEYWORDS:
+        if mk in n:
+            return True
+    return False
+
+
+def is_personnel_article_title(title: str, text: str = "") -> bool:
+    """
+    기사 제목이 [인사] 또는 <인사> 형태의 공식 인사 기사이며,
+    정부/금융/일반기업이 아닌 '언론사 인사소식' 기사인지 엄격 검증합니다.
+    """
     if not title:
         return False
     t = html.unescape(str(title)).replace(" ", "")
-    return ("[인사]" in t) or ("<인사>" in t) or ("【인사】" in t) or ("(인사)" in t)
+    is_personnel = ("[인사]" in t) or ("<인사>" in t) or ("【인사】" in t) or ("(인사)" in t)
+    if not is_personnel:
+        return False
+
+    t_lower = html.unescape(str(title)).lower()
+    for nmk in NON_MEDIA_KEYWORDS:
+        if nmk in t_lower:
+            return False
+
+    for mk in MEDIA_KEYWORDS:
+        if mk in t_lower:
+            return True
+
+    if text:
+        text_lower = text.lower()
+        has_media_dept = any(k in text_lower for k in ["편집국", "보도국", "보도본부", "논설위원", "정치부", "사회부", "경제부", "기자", "특파원", "데스크"])
+        if has_media_dept:
+            return True
+
+    title_match = re.search(r"(?:\[인사\]|<인사>|【인사】|\(인사\))\s*([가-힣A-Za-z0-9]+)", html.unescape(str(title)))
+    if title_match:
+        org_cand = title_match.group(1).strip()
+        if is_media_organization(org_cand):
+            return True
+
+    if t in ["[인사]", "<인사>", "【인사】"]:
+        return True
+
+    return False
 
 
 # ==========================================
@@ -264,12 +330,12 @@ class PersonnelRegexParser:
         if not article_text:
             return results
 
-        # 제목에서 언론사 힌트 파악 (예: [인사] 뉴스1)
+        # 제목에서 언론사 힌트 파악 (예: [인사] 뉴스1 or <인사> 연합뉴스)
         current_media = normalize_media_name(default_media)
-        title_media_match = re.search(r"\[인사\]\s*([가-힣A-Za-z0-9]+)", article_title)
+        title_media_match = re.search(r"(?:\[인사\]|<인사>|【인사】|\(인사\))\s*([가-힣A-Za-z0-9]+)", html.unescape(article_title))
         if title_media_match:
             cand = title_media_match.group(1).strip()
-            if len(cand) >= 2 and cand not in ["정부", "외", "공기업", "언론사", "종합"]:
+            if is_media_organization(cand):
                 current_media = normalize_media_name(cand)
 
         current_action = "발령"
@@ -287,7 +353,7 @@ class PersonnelRegexParser:
             media_match = cls.MEDIA_HEADER_PATTERN.search(line)
             if media_match:
                 cand_media = media_match.group(1).strip()
-                if len(cand_media) >= 2 and cand_media not in ["승진", "전보", "보임", "언론사", "종합"]:
+                if is_media_organization(cand_media):
                     current_media = normalize_media_name(cand_media)
 
             # 2. 발령 액션 감지 (<승진>, ◇전보 등)
@@ -424,6 +490,10 @@ class PersonnelRegexParser:
                     last_dept = extracted_dept
 
             if extracted_name:
+                final_media = normalize_media_name(media) if media else "미상"
+                if not is_media_organization(final_media):
+                    continue  # 언론사 인사소식만 정리 (비언론사 배제)
+
                 clean_dept = re.sub(r"^[△▲◇◆■◎\s]+", "", extracted_dept).strip()
                 clean_rank = re.sub(r"^[△▲◇◆■◎\s]+", "", extracted_rank).strip()
                 if not clean_rank:
@@ -433,7 +503,7 @@ class PersonnelRegexParser:
                 domain = classify_domain(clean_dept)
 
                 records.append({
-                    "media": media,
+                    "media": final_media,
                     "dept": clean_dept,
                     "domain": domain,
                     "rank_title": clean_rank,
@@ -489,6 +559,12 @@ class PersonnelTrackerEngine:
         else:
             effective_records = list(raw_records)
             new_added_count = len(raw_records)
+
+        # 언론사 인사소식만 엄격 필터링
+        effective_records = [
+            r for r in effective_records 
+            if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+        ]
 
         if not effective_records:
             return {"total_records": 0, "new_records": 0, "unique_reporters": 0, "job_changes_detected": 0}
@@ -946,50 +1022,65 @@ class OnlineNewsTracker:
                 resp = requests.get(daum_url, headers=cls.HEADERS, timeout=6, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, "html.parser")
-                    for a in soup.find_all("a", href=True):
-                        href = a["href"]
-                        if "v.daum.net/v/" in href and href not in seen_urls:
-                            seen_urls.add(href)
-                            title = a.get_text(strip=True)
-                            if len(title) >= 3:
-                                # URL에서 즉시 날짜 추출
-                                d_match = re.search(r"v\.daum\.net/v/(\d{4})(\d{2})(\d{2})", href)
-                                d_text = f"{d_match.group(1)}-{d_match.group(2)}-{d_match.group(3)}" if d_match else ""
-                                articles.append({
-                                    "title": title,
-                                    "url": href,
-                                    "media": "온라인뉴스",
-                                    "date_text": d_text
-                                })
-                                if len(articles) >= max_items:
-                                    break
+                    card_items = soup.select("div.c-item-content, li.bx, div.item-title, ul.list_news > li")
+                    for it in card_items:
+                        tit_a = it.select_one("strong.tit-doc a, .item-title a, a.tit_main, a.c-tit-doc")
+                        if not tit_a:
+                            continue
+                        href = tit_a.get("href", "")
+                        if not href or href in seen_urls:
+                            continue
+                        if "v.daum.net/v/" not in href and "news.v.daum.net/v/" not in href:
+                            continue
+                        title = html.unescape(tit_a.get_text(strip=True))
+                        if len(title) < 3:
+                            continue
+                        if not is_personnel_article_title(title):
+                            continue
+
+                        press_elem = it.select_one(".item-subinfo .txt_info, a.f_nb, span.c-tit-info, .gem-subinfo a, span.info")
+                        press_name = press_elem.get_text(strip=True) if press_elem else "온라인뉴스"
+
+                        seen_urls.add(href)
+                        d_match = re.search(r"v\.daum\.net/v/(\d{4})(\d{2})(\d{2})", href)
+                        d_text = f"{d_match.group(1)}-{d_match.group(2)}-{d_match.group(3)}" if d_match else ""
+                        articles.append({
+                            "title": title,
+                            "url": href,
+                            "media": press_name,
+                            "date_text": d_text
+                        })
+                        if len(articles) >= max_items:
+                            break
             except Exception as e:
                 print(f"[Daum Search Error] {e}")
 
-        # 2. 네이버 뉴스 웹 검색 (30개년 관련도순[sort=0] + 최신순[sort=1])
-        for n_sort, n_so in [("0", "so:r"), ("1", "so:dd")]:
+        # 2. 네이버 모바일 뉴스 검색 (30개년 관련도순[sort=0] + 최신순[sort=1])
+        for n_sort in ["0", "1"]:
             if len(articles) >= max_items:
                 break
             try:
-                naver_url = f"https://search.naver.com/search.naver?where=news&query={encoded_query}&sm=tab_opt&sort={n_sort}&photo=0&field=0&pd=3&ds={start_year}.01.01&de={end_year}.12.31&nso={n_so},p:from{start_year}0101to{end_year}1231"
+                naver_url = f"https://m.search.naver.com/search.naver?where=m_news&query={encoded_query}&sort={n_sort}&ds={start_year}.01.01&de={end_year}.12.31"
                 resp = requests.get(naver_url, headers=cls.HEADERS, timeout=6, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, "html.parser")
-                    for a in soup.select("a.news_tit, a.info, a[href*='news.naver.com'], a[href*='articleView'], a[href*='article']"):
-                        href = a.get("href", "")
-                        title = a.get_text(strip=True)
-                        if not href or href.startswith("?") or href.startswith("javascript:") or href in seen_urls:
+                    for it in soup.select("div.news_wrap, div.news_area, li.bx"):
+                        tit_a = it.select_one("a.news_tit, a.api_txt_lines, a.tit")
+                        if not tit_a:
                             continue
-                        if any(k in href for k in ["help.naver.com", "channelPromotion", "search.naver.com", "policy.naver.com"]):
+                        href = tit_a.get("href", "")
+                        title = html.unescape(tit_a.get_text(strip=True))
+                        if not href or href in seen_urls or len(title) < 3:
                             continue
-                        if len(title) < 3:
+                        if not is_personnel_article_title(title):
                             continue
-
+                        press_elem = it.select_one("a.info.press, span.info, span.press")
+                        press_name = press_elem.get_text(strip=True) if press_elem else "온라인뉴스"
                         seen_urls.add(href)
                         articles.append({
                             "title": title,
                             "url": href,
-                            "media": "온라인뉴스",
+                            "media": press_name,
                             "date_text": ""
                         })
                         if len(articles) >= max_items:
@@ -1125,12 +1216,9 @@ class OnlineNewsTracker:
 
         # 30개년(1995~2026) 연대기 추적을 위한 연도별 구간(Multi-window) 분할 탐색
         intervals = [
-            (2024, 2026),  # 최근 발령
-            (2020, 2023),  # 3~6개년 전 (승진/보직)
-            (2016, 2019),  # 7~10개년 전 (부서 이동)
-            (2011, 2015),  # 11~15개년 전 (중기 이력)
-            (2005, 2010),  # 16~21개년 전 (초기 소속사/이직)
-            (1995, 2004)   # 22~30개년 전 (입사 초기)
+            (2020, 2026),  # 최근 발령 (6개년)
+            (2012, 2019),  # 중기 발령 (8개년)
+            (1995, 2011)   # 초기 발령 (17개년)
         ]
 
         all_records = []
@@ -1141,7 +1229,7 @@ class OnlineNewsTracker:
             if stop_event and getattr(stop_event, "is_set", lambda: False)():
                 break
             queries = [
-                f'"{name}" [인사]',
+                f'"{name}" "[인사]"',
                 f'"{name}" "<인사>"',
                 f'"{name}" 인사'
             ]
@@ -1245,22 +1333,19 @@ class OnlineNewsTracker:
             query_parts.append(f'"{rank_clean}"')
 
         if not query_parts:
-            query_parts = ["[인사]"]
+            query_parts = ['"언론사"']
 
         main_kw = " ".join(query_parts)
         queries = [
-            f'[인사] {main_kw}',
-            f'<인사> {main_kw}',
-            f'"{main_kw}" 인사'
+            f'{main_kw} "[인사]"',
+            f'{main_kw} "<인사>"',
+            f'{main_kw} 인사'
         ]
 
         intervals = [
-            (2024, 2026),
-            (2020, 2023),
-            (2016, 2019),
-            (2011, 2015),
-            (2005, 2010),
-            (1995, 2004)
+            (2022, 2026),  # 최근 발령 (5개년)
+            (2015, 2021),  # 중기 발령 (7개년)
+            (1995, 2014)   # 과거 발령 (20개년)
         ]
 
         all_records = []
@@ -1311,6 +1396,8 @@ class OnlineNewsTracker:
                         if media_clean and media_clean not in r.get("media", ""):
                             if media_clean in art["title"]:
                                 r["media"] = normalize_media_name(media_clean)
+                            else:
+                                continue
                         if dept_clean and dept_clean not in r.get("dept", ""):
                             continue
                         if rank_clean and rank_clean not in r.get("rank_title", ""):
@@ -1460,6 +1547,7 @@ class OnlineNewsTracker:
             clean_recs = [
                 r for r in recs 
                 if is_personnel_article_title(r.get("article_title", ""))
+                and is_media_organization(r.get("media", ""))
                 and r["name"] not in STOPWORDS and len(r["name"]) >= 2
             ]
             if not clean_recs:
@@ -1890,8 +1978,11 @@ class MediaDatabase:
                 """)
             raw_rows = [dict(row) for row in cursor.fetchall()]
 
-        # [인사] 또는 <인사> 공식 기사 레코드만 엄격 필터링
-        rows = [r for r in raw_rows if is_personnel_article_title(r.get("article_title", ""))]
+        # [인사] 또는 <인사> 공식 기사이자 언론사 발령 레코드만 엄격 필터링
+        rows = [
+            r for r in raw_rows 
+            if is_personnel_article_title(r.get("article_title", "")) and is_media_organization(r.get("media", ""))
+        ]
 
         grouped = {}
         for r in rows:
