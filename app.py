@@ -743,23 +743,16 @@ with tab_search:
     # 인사 소식 (발령 명단) 테이블 표시 - 이름 검색 또는 매체/부서별 검색 결과 공통
     if matched_records:
         st.markdown("##### 인사 소식")
-        # 중복 발령 기록 제거 및 최신 발령일자 기준 정렬
-        unique_matched = []
-        seen_matched_keys = set()
-        for r in matched_records:
-            k = (r.get("pub_date"), r.get("media"), r.get("dept"), r.get("rank_title"), r.get("name"))
-            if k not in seen_matched_keys:
-                seen_matched_keys.add(k)
-                unique_matched.append(r)
-        unique_matched.sort(key=lambda x: str(x.get("pub_date", "")), reverse=True)
+        # 동일한 인사는 가장 빠른 기사 일자(Earliest Date) 기준으로 단일화 및 최신 발령일자순 정렬
+        unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
 
         df_display = pd.DataFrame([{
+            "발령일자": r.get("pub_date", ""),
             "언론사": r.get("media", ""),
             "발령구분": r.get("action_type", "발령"),
             "부서": r.get("dept", ""),
             "직급": r.get("rank_title", ""),
             "성명": r.get("name", ""),
-            "발령일자": r.get("pub_date", ""),
             "기사원문(링크주소)": r.get("article_url", "")
         } for r in unique_matched[:50]])
         st.dataframe(
@@ -1047,6 +1040,7 @@ with tab_monitoring:
             r for r in mn.get("records", []) 
             if is_personnel_article_title(r.get("article_title", "")) and is_media_organization(r.get("media", ""))
         ]
+        valid_recs = MediaDatabase.deduplicate_timeline_records(valid_recs, window_days=30, sort_desc=True)
         if valid_recs:
             by_act = {}
             for r in valid_recs:
@@ -1206,15 +1200,16 @@ with tab_monitoring:
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("#### 인사 소식")
         
+        unique_raw_recs = MediaDatabase.deduplicate_timeline_records(all_raw_recs, window_days=30, sort_desc=True)
         table_rows = []
-        for r in all_raw_recs:
+        for r in unique_raw_recs:
             table_rows.append({
+                "발령일자": r.get("pub_date", ""),
                 "언론사": r.get("media", ""),
                 "발령구분": r.get("action_type", "발령"),
                 "부서": r.get("dept", ""),
                 "직급": r.get("rank_title", ""),
                 "성명": r.get("name", ""),
-                "발령일자": r.get("pub_date", ""),
                 "기사원문(링크주소)": r.get("article_url", "")
             })
         

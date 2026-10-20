@@ -452,6 +452,7 @@ class PersonnelRegexParser:
         # 쉼표, 슬래시, 세미콜론, 가운데점으로 분할
         parts = re.split(r"[,/;\·|]", text)
         last_dept = ""
+        last_rank = section_rank or ""
 
         for part in parts:
             part = part.strip()
@@ -460,7 +461,7 @@ class PersonnelRegexParser:
                 continue
 
             extracted_name = None
-            extracted_rank = section_rank or "기자"
+            extracted_rank = section_rank or last_rank or "기자"
             extracted_dept = last_dept or "본사"
 
             # 1. 토큰 중 유효한 한글 인명(2~4자) 찾기
@@ -478,26 +479,36 @@ class PersonnelRegexParser:
                 other_tokens = [tokens[i] for i in range(len(tokens)) if i != name_idx]
                 if not other_tokens:
                     # 이름만 있는 경우
-                    extracted_rank = section_rank or "기자"
+                    extracted_rank = section_rank or last_rank or "기자"
                 elif len(other_tokens) == 1:
                     first = other_tokens[0]
-                    rank_match = re.search(f"({RANK_REGEX_PATTERN})$", first)
-                    if rank_match:
-                        extracted_rank = rank_match.group(1)
-                        dept_part = first[:rank_match.start()].strip()
-                        if dept_part:
-                            if (extracted_rank.startswith("부장") or extracted_rank.startswith("차장") or extracted_rank.startswith("팀장")) and not dept_part.endswith("부") and not dept_part.endswith("팀"):
-                                dept_part = dept_part + ("팀" if extracted_rank.startswith("팀장") else "부")
-                            extracted_dept = dept_part
-                        else:
-                            extracted_dept = last_dept or "본사"
-                    elif first in RANK_HIERARCHY:
-                        extracted_rank = first
-                        extracted_dept = last_dept or "본사"
+                    # 〃(반복 부호) 처리: 이전 직급 상속 및 부서명 정제
+                    if "〃" in first:
+                        dept_clean = first.replace("〃", "").strip()
+                        if dept_clean and not dept_clean.endswith("부") and not dept_clean.endswith("팀"):
+                            dept_clean = dept_clean + ("팀" if "팀" in last_rank else "부")
+                        extracted_dept = dept_clean or last_dept or "본사"
+                        extracted_rank = last_rank or section_rank or "기자"
                     else:
-                        extracted_dept = first
-                        extracted_rank = section_rank or "기자"
+                        rank_match = re.search(f"({RANK_REGEX_PATTERN})$", first)
+                        if rank_match:
+                            extracted_rank = rank_match.group(1)
+                            dept_part = first[:rank_match.start()].strip()
+                            if dept_part:
+                                if (extracted_rank.startswith("부장") or extracted_rank.startswith("차장") or extracted_rank.startswith("팀장")) and not dept_part.endswith("부") and not dept_part.endswith("팀"):
+                                    dept_part = dept_part + ("팀" if extracted_rank.startswith("팀장") else "부")
+                                extracted_dept = dept_part
+                            else:
+                                extracted_dept = last_dept or "본사"
+                        elif first in RANK_HIERARCHY:
+                            extracted_rank = first
+                            extracted_dept = last_dept or "본사"
+                        else:
+                            extracted_dept = first
+                            extracted_rank = section_rank or last_rank or "기자"
                     last_dept = extracted_dept
+                    if extracted_rank and extracted_rank not in ["기자", "평기자"]:
+                        last_rank = extracted_rank
                 else:
                     # 2개 이상 토큰이 남은 경우 (예: "건설부동산부" "부장", "편집국" "오피니언부", "편집국" "경제부" "차장")
                     found_rank_idx = -1
@@ -520,10 +531,12 @@ class PersonnelRegexParser:
                             dept_tokens = other_tokens[:found_rank_idx]
                             extracted_dept = " ".join(dept_tokens) if dept_tokens else (last_dept or "본사")
                     else:
-                        # 직급 토큰이 없는 경우 (예: "편집국" "오피니언부") -> 모두 부서로 간주, 직급은 section_rank
+                        # 직급 토큰이 없는 경우 (예: "편집국" "오피니언부") -> 모두 부서로 간주, 직급은 section_rank 또는 직전 직급
                         extracted_dept = " ".join(other_tokens)
-                        extracted_rank = section_rank or "기자"
+                        extracted_rank = section_rank or last_rank or "기자"
                     last_dept = extracted_dept
+                    if extracted_rank and extracted_rank not in ["기자", "평기자"]:
+                        last_rank = extracted_rank
 
             # 3. 토큰이 1개로 붙어있는 경우 (예: "건설부동산부장김희준" or "홍길동정치부장")
             elif len(tokens) == 1:
@@ -1882,15 +1895,21 @@ class MediaDatabase:
             return [dict(row) for row in cursor.fetchall()]
 
     @staticmethod
-    def deduplicate_timeline_records(records: List[Dict[str, Any]], window_days: int = 60) -> List[Dict[str, Any]]:
+    def deduplicate_timeline_records(records: List[Dict[str, Any]], window_days: int = 90, sort_desc: bool = False) -> List[Dict[str, Any]]:
         """
-        일정 기간(기본 60일) 동안 동일한 발령(동일 매체, 부서, 직급)이 여러 기사로 보도되어
-        중복 수집된 경우, 첫 기사 발행 일자를 기준으로 단일 이력으로 병합합니다.
+        일정 기간(기본 90일) 동안 동일한 발령(동일 인물, 동일 매체, 부서, 직급)이 여러 기사로 보도되어
+        중복 수집된 경우, 가장 빠른 기사 발행 일자(Earliest Article Date)를 기준으로 단일 이력으로 병합합니다.
         """
         if not records:
             return []
+
+        def _dept_key(d: str) -> str:
+            s = re.sub(r"[〃\s]+", "", str(d).strip())
+            if s.endswith("부") and len(s) > 2:
+                return s[:-1]
+            return s
         
-        # 날짜 오름차순 정렬
+        # 날짜 오름차순 정렬 (과거 -> 현재)
         sorted_records = sorted(records, key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10])
         merged: List[Dict[str, Any]] = []
 
@@ -1904,11 +1923,12 @@ class MediaDatabase:
 
             matched_idx = -1
             for idx, m in enumerate(merged):
+                same_name = (not m.get("name") or not rec_copy.get("name") or m.get("name", "").strip() == rec_copy.get("name", "").strip())
                 same_media = normalize_media_name(m.get("media", "")) == normalize_media_name(rec_copy.get("media", ""))
-                same_dept = m.get("dept", "").strip() == rec_copy.get("dept", "").strip()
+                same_dept = _dept_key(m.get("dept", "")) == _dept_key(rec_copy.get("dept", ""))
                 same_rank = m.get("rank_title", "").strip() == rec_copy.get("rank_title", "").strip()
 
-                if same_media and same_dept and same_rank:
+                if same_name and same_media and same_dept and same_rank:
                     m_date_str = str(m.get("pub_date", ""))[:10]
                     try:
                         m_date = datetime.datetime.strptime(m_date_str, "%Y-%m-%d").date()
@@ -1924,9 +1944,9 @@ class MediaDatabase:
                         break
 
             if matched_idx >= 0:
-                # 첫 기사일자(가장 빠른 일자)를 기준으로 표기
                 existing = merged[matched_idx]
                 e_date_str = str(existing.get("pub_date", ""))[:10]
+                # 동일한 인사는 가장 빠른 기사 일자(Earliest Date) 적용
                 if r_date_str and (not e_date_str or r_date_str < e_date_str):
                     existing["pub_date"] = r_date_str
                     if rec_copy.get("article_url"):
@@ -1936,10 +1956,25 @@ class MediaDatabase:
                 elif not existing.get("article_url") and rec_copy.get("article_url"):
                     existing["article_url"] = rec_copy["article_url"]
                     existing["article_title"] = rec_copy.get("article_title", "")
+                
+                # 부서명이 더 상세하고 정돈된 경우 갱신
+                cur_dept = str(existing.get("dept", ""))
+                new_dept = str(rec_copy.get("dept", ""))
+                if "부" in new_dept and "부" not in cur_dept:
+                    existing["dept"] = new_dept
+                elif len(new_dept) > len(cur_dept) and "〃" not in new_dept:
+                    existing["dept"] = new_dept
+
+                # 발령구분이 더 구체적인 경우 갱신
+                if existing.get("action_type") in ["발령", ""] and rec_copy.get("action_type") not in ["발령", ""]:
+                    existing["action_type"] = rec_copy["action_type"]
             else:
                 merged.append(rec_copy)
 
-        merged.sort(key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10])
+        if sort_desc:
+            merged.sort(key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10], reverse=True)
+        else:
+            merged.sort(key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10])
         return merged
 
     def get_reporter_timeline(self, reporter_id: str) -> List[Dict[str, Any]]:
@@ -1951,7 +1986,7 @@ class MediaDatabase:
                 ORDER BY pub_date ASC, id ASC
             """, (reporter_id,))
             rows = [dict(row) for row in cursor.fetchall()]
-            return self.deduplicate_timeline_records(rows)
+            return self.deduplicate_timeline_records(rows, sort_desc=True)
 
     def search_reporters(self, name: str = "", media: str = "", dept: str = "", rank: str = "") -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
