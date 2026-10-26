@@ -699,7 +699,7 @@ with tab_search:
         if active_name:
             matched_records = [
                 r for r in db.search_records(name=active_name)
-                if is_media_organization(r.get("media", "")) and is_personnel_article_title(r.get("article_title", ""))
+                if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
             ]
         else:
             matched_records = []
@@ -715,7 +715,7 @@ with tab_search:
             ]
             matched_records = [
                 r for r in db.search_records(media=m_val, dept=d_val, rank=r_val)
-                if is_media_organization(r.get("media", "")) and is_personnel_article_title(r.get("article_title", ""))
+                if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
             ]
         else:
             filtered_reporters = all_reporters
@@ -1048,7 +1048,7 @@ with tab_monitoring:
     # [인사] 또는 <인사> 기사 중 언론사 인사소식만 엄격 필터링
     all_raw_recs = [
         r for r in summary_data["raw_records"] 
-        if is_personnel_article_title(r.get("article_title", "")) and is_media_organization(r.get("media", ""))
+        if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
     ]
     media_news_list = []
     for mn in summary_data["media_news"]:
@@ -1056,7 +1056,7 @@ with tab_monitoring:
             continue
         valid_recs = [
             r for r in mn.get("records", []) 
-            if is_personnel_article_title(r.get("article_title", "")) and is_media_organization(r.get("media", ""))
+            if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
         ]
         valid_recs = MediaDatabase.deduplicate_timeline_records(valid_recs, window_days=30, sort_desc=True)
         if valid_recs:
