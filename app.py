@@ -309,12 +309,23 @@ st.markdown("""
         box-shadow: 0 2px 6px rgba(0,0,0,0.03);
     }
 
-    /* 모바일 반응형 폰트 조절 */
-    @media (max-width: 768px) {
-        .metric-value { font-size: 1.4rem; }
-        .profile-name { font-size: 1.3rem; }
-        .timeline-container { padding-left: 24px; }
-        .timeline-dot { left: -31px; width: 14px; height: 14px; }
+    /* 인사소식 데이터프레임 표 헤더 및 셀 가운데 정렬 */
+    div[data-testid="stDataFrame"] div[role="grid"] div[role="columnheader"] {
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    div[data-testid="stDataFrame"] div[role="grid"] div[role="columnheader"] > div {
+        justify-content: center !important;
+        text-align: center !important;
+        width: 100% !important;
+    }
+    div[data-testid="stDataFrame"] div[role="grid"] div[role="gridcell"] {
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    div[data-testid="stDataFrame"] table th,
+    div[data-testid="stDataFrame"] table td {
+        text-align: center !important;
     }
 
     /* ===================================================
@@ -748,7 +759,7 @@ with tab_search:
 
         df_display = pd.DataFrame([{
             "발령일자": r.get("pub_date", ""),
-            "언론사": r.get("media", ""),
+            "언론사": normalize_media_name(r.get("media", "")),
             "발령구분": r.get("action_type", "발령"),
             "부서": r.get("dept", ""),
             "직급": r.get("rank_title", ""),
@@ -758,8 +769,15 @@ with tab_search:
         st.dataframe(
             df_display,
             column_config={
+                "발령일자": st.column_config.TextColumn("발령일자", alignment="center"),
+                "언론사": st.column_config.TextColumn("언론사", alignment="center"),
+                "발령구분": st.column_config.TextColumn("발령구분", alignment="center"),
+                "부서": st.column_config.TextColumn("부서", alignment="center"),
+                "직급": st.column_config.TextColumn("직급", alignment="center"),
+                "성명": st.column_config.TextColumn("성명", alignment="center"),
                 "기사원문(링크주소)": st.column_config.LinkColumn(
                     "기사원문(링크주소)",
+                    alignment="center",
                     help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
                     validate=r"^https?://.*",
                     max_chars=60,
@@ -1140,7 +1158,7 @@ with tab_monitoring:
         st.markdown("#### 언론사별 인사 소식 정리")
 
         for mn in media_news_list:
-            m_name = mn["media"]
+            m_name = normalize_media_name(mn["media"])
             m_recs = mn["records"]
             m_by_act = mn.get("by_action", {})
             m_date = mn.get("latest_date", "")
@@ -1205,7 +1223,7 @@ with tab_monitoring:
         for r in unique_raw_recs:
             table_rows.append({
                 "발령일자": r.get("pub_date", ""),
-                "언론사": r.get("media", ""),
+                "언론사": normalize_media_name(r.get("media", "")),
                 "발령구분": r.get("action_type", "발령"),
                 "부서": r.get("dept", ""),
                 "직급": r.get("rank_title", ""),
@@ -1218,8 +1236,15 @@ with tab_monitoring:
             st.dataframe(
                 df_table,
                 column_config={
+                    "발령일자": st.column_config.TextColumn("발령일자", alignment="center"),
+                    "언론사": st.column_config.TextColumn("언론사", alignment="center"),
+                    "발령구분": st.column_config.TextColumn("발령구분", alignment="center"),
+                    "부서": st.column_config.TextColumn("부서", alignment="center"),
+                    "직급": st.column_config.TextColumn("직급", alignment="center"),
+                    "성명": st.column_config.TextColumn("성명", alignment="center"),
                     "기사원문(링크주소)": st.column_config.LinkColumn(
                         "기사원문(링크주소)",
+                        alignment="center",
                         help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
                         validate=r"^https?://.*",
                         max_chars=60,

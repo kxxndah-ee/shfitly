@@ -164,32 +164,65 @@ def calculate_domain_similarity(d1: str, d2: str) -> float:
 
 
 def normalize_media_name(raw_name: str) -> str:
-    """언론사명 뒤의 법인명, 신문사, 접미사를 표준 매체명으로 정규화합니다."""
+    """언론사명에서 <인사>, [인사], 편집국, 보도국 등 부가 설명을 제거하고 순수 언론사명만 표준 표기합니다."""
     if not raw_name:
         return "미상"
     name = str(raw_name).strip()
-    name = re.sub(r"\(주\)|주식회사|신문사|신문|일보사|방송사|미디어그룹", "", name).strip()
+    
+    # 1. <인사>, [인사], 【인사】, (인사), 〈인사〉, «인사» 등 인사 관련 태그 및 단어 제거
+    name = re.sub(r"[<\[\(【〈«][\s\w]*인사[\s\w]*[>\]\)】〉»]", "", name)
+    name = re.sub(r"[<\[\(【〈«]\s*인사\s*", "", name)
+    name = re.sub(r"\s*인사\s*[>\]\)】〉»]", "", name)
+    name = re.sub(r"^\s*인사\s*|\s*인사\s*$", "", name)
+    name = re.sub(r"^[◇◆■●◎▲△▼▷▶·\-\*:<\[\(【〈«\s]+|[◇◆■●◎▲△▼▷▶·\-\*:>\]\)】〉»\s]+$", "", name)
+
+    # 2. 편집국, 보도국, 논설실 등 부서/국/본부 설명 제거
+    name = re.sub(r"\s*(편집국|보도국|보도본부|디지털뉴스국|디지털뉴스본부|디지털국|논설실|논설위원실|신문총괄|경영총괄|미디어본부|방송본부|뉴스총괄)\b.*$", "", name)
+
+    # 3. 법인명, 신문사, 일보사 등 접미사 정리
+    name = re.sub(r"\(주\)|주식회사|신문사|일보사|방송사|미디어그룹", "", name).strip()
     if name.endswith("사") and len(name) >= 3 and not name.endswith("통신사"):
         name = name[:-1]
-    
-    # 주요 언론사 매핑 규칙
-    if "조선" in name: return "조선일보"
-    if "중앙" in name: return "중앙일보"
-    if "동아" in name: return "동아일보"
-    if "한국경제" in name: return "한국경제"
-    if "매일경제" in name: return "매일경제"
-    if "서울경제" in name: return "서울경제"
+
+    # 4. 주요 언론사 매핑 및 표준화 규칙
+    if "조선일보" in name or ("조선" in name and "일보" in raw_name): return "조선일보"
+    if "중앙일보" in name or ("중앙" in name and "일보" in raw_name): return "중앙일보"
+    if "동아일보" in name or ("동아" in name and "일보" in raw_name): return "동아일보"
+    if "한국경제" in name or "한경" in name: return "한국경제"
+    if "매일경제" in name or "매경" in name: return "매일경제"
+    if "서울경제" in name or "서경" in name: return "서울경제"
+    if "아시아경제" in name or "아경" in name: return "아시아경제"
     if "헤럴드" in name: return "헤럴드경제"
-    if "연합" in name: return "연합뉴스"
+    if "파이낸셜" in name: return "파이낸셜뉴스"
+    if "머니투데이" in name or "머투" in name: return "머니투데이"
+    if "이데일리" in name: return "이데일리"
+    if "디지털타임스" in name: return "디지털타임스"
+    if "전자신문" in name: return "전자신문"
+    if "브릿지" in name: return "브릿지경제"
+    if "아주경제" in name: return "아주경제"
+    if "에너지경제" in name: return "에너지경제"
+    if "연합뉴스" in name or name == "연합": return "연합뉴스"
     if "뉴스1" in name or "뉴스원" in name: return "뉴스1"
     if "뉴시스" in name: return "뉴시스"
     if "한국일보" in name: return "한국일보"
     if "경향" in name: return "경향신문"
     if "한겨레" in name: return "한겨레"
-    if "문화" in name and "일보" in raw_name: return "문화일보"
-    if "세계" in name and "일보" in raw_name: return "세계일보"
-    if "국민" in name and "일보" in raw_name: return "국민일보"
-    return name
+    if "문화일보" in name or ("문화" in name and "일보" in raw_name): return "문화일보"
+    if "세계일보" in name or ("세계" in name and "일보" in raw_name): return "세계일보"
+    if "국민일보" in name or ("국민" in name and "일보" in raw_name): return "국민일보"
+    if "부산일보" in name: return "부산일보"
+    if "국제신문" in name: return "국제신문"
+    if "매일신문" in name: return "매일신문"
+    if "영남일보" in name: return "영남일보"
+    if "광주일보" in name: return "광주일보"
+    if "대전일보" in name: return "대전일보"
+    if "강원일보" in name: return "강원일보"
+    if "강원도민일보" in name: return "강원도민일보"
+
+    # 남아있는 불필요한 기호 및 단어 최종 정제
+    name = re.sub(r"^[◇◆■●◎▲△▼▷▶·\-\*:<\[\(【〈«\s]+|[◇◆■●◎▲△▼▷▶·\-\*:>\]\)】〉»\s]+$", "", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name or "온라인뉴스"
 
 
 def parse_rank_level(rank_title: str) -> int:
@@ -337,13 +370,19 @@ class PersonnelRegexParser:
         if not article_text:
             return results
 
-        # 제목에서 언론사 힌트 파악 (예: [인사] 뉴스1 or <인사> 연합뉴스)
+        # 제목에서 언론사 힌트 파악 (예: [인사] 뉴스1 or <인사> 연합뉴스 or 매일경제 <인사>)
         current_media = normalize_media_name(default_media)
         title_media_match = re.search(r"(?:\[인사\]|<인사>|【인사】|\(인사\))\s*([가-힣A-Za-z0-9]+)", html.unescape(article_title))
         if title_media_match:
             cand = title_media_match.group(1).strip()
             if is_media_organization(cand):
                 current_media = normalize_media_name(cand)
+        else:
+            rev_match = re.search(r"([가-힣A-Za-z0-9]+)\s*(?:\[인사\]|<인사>|【인사】|\(인사\))", html.unescape(article_title))
+            if rev_match:
+                cand = rev_match.group(1).strip()
+                if is_media_organization(cand):
+                    current_media = normalize_media_name(cand)
 
         current_action = "발령"
         current_section_rank = ""
@@ -2094,7 +2133,8 @@ class MediaDatabase:
 
         grouped = {}
         for r in rows:
-            med = r.get("media", "미상")
+            med = normalize_media_name(r.get("media", "미상"))
+            r["media"] = med
             if med not in grouped:
                 grouped[med] = {
                     "media": med,
