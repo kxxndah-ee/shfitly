@@ -135,6 +135,7 @@ STOPWORDS = {
     "인사", "발령", "본사", "지사", "편집국", "보도국", "신문", "방송", "뉴스", "한국", "일보",
     "매일", "경제", "대표", "국장", "부장", "차장", "팀장", "기자", "위원", "실장", "총괄",
     "대우", "승진", "전보", "보임", "신규", "선임", "퇴임", "파견", "내정", "전보자",
+    "임용", "임명", "채용", "영입", "이동", "전임", "선출", "위촉", "해임", "면직", "보직",
     "외", "등", "겸", "및", "간", "후보", "부국장",
     "카톡", "이메일", "제보", "문의", "게재", "연락처", "포함", "담당자", "저작권",
     "무단전재", "재배포", "신문사", "제보는", "산업국", "중앙신문", "경향신문", "한국정경",
@@ -372,6 +373,8 @@ class PersonnelRegexParser:
             return None
         if name in STOPWORDS:
             return None
+        if name in cls.ACTION_CANDIDATES or name in ["임용", "보임", "임명", "승진", "전보", "전출", "전입", "파견", "선임", "채용", "영입", "이동", "전임", "보직", "선출", "위촉", "해임", "면직"]:
+            return None
         if name in RANK_HIERARCHY or any(name == r for r in RANK_HIERARCHY):
             return None
         if is_media_organization(name):
@@ -418,6 +421,11 @@ class PersonnelRegexParser:
             # 0. 푸터, 제보 및 문의 안내 문구 스킵
             if any(k in line for k in ["게재 문의", "제보", "저작권", "무단전재", "재배포", "기사문의", "확인용", "카톡", "연락처"]):
                 continue
+
+            # 0-1. 통신사/바이라인 시그니처 및 기사 종결 기호 사전 정제 (예: (서울=연합뉴스), (서울=뉴스1), (세종=연합뉴스), (끝) 등)
+            line = re.sub(r"\([가-힣\s]*=(?:연합뉴스|뉴스1|[가-힣\s]*)\)", "", line)
+            line = re.sub(r"\([^)]*(?:연합뉴스|뉴스1|끝)[^)]*\)", "", line)
+            line = re.sub(r"\([가-힣\w\s·-]*=[가-힣\w\s·-]*\)", "", line)
 
             # 1. 언론사 변경 감지 (기사 중간에 다른 언론사 헤더가 나올 경우)
             media_match = cls.MEDIA_HEADER_PATTERN.search(line)
@@ -485,7 +493,9 @@ class PersonnelRegexParser:
                 m_name_inside = re.search(r"([가-힣]{2,})\(([가-힣]{2,4})\)", item_clean)
                 if m_name_inside and cls.clean_name(m_name_inside.group(2)):
                     item_clean = item_clean[:m_name_inside.start()] + f"{m_name_inside.group(1)} {m_name_inside.group(2)}" + item_clean[m_name_inside.end():]
-                # 4) 기타 잔여 괄호 정리
+                # 4) 통신사 출처 및 잔여 괄호 정리
+                item_clean = re.sub(r"\([^)]*(?:연합뉴스|뉴스1|끝)[^)]*\)", "", item_clean)
+                item_clean = re.sub(r"\([^)]*=[^)]*\)", "", item_clean)
                 item_clean = re.sub(r"\([가-힣\w\s·-]*\)", "", item_clean)
                 item_clean = re.sub(r"\s+", " ", item_clean).strip()
 
@@ -1146,114 +1156,26 @@ class OnlineNewsTracker:
                 return True
             return False
 
-        # 0. 뉴스1 공식 인사 섹션(life-culture/press) 직접 탐색 (당일/최신 공식 인사 누락 방지)
         clean_q = query.replace('"', '').replace("'", "").strip()
-        is_general_personnel = any(k in clean_q for k in ["[인사]", "<인사>", "인사"])
-        try:
-            for page_num in [1, 2]:
-                if len(articles) >= max_items:
-                    break
-                n1_sec_url = f"https://www.news1.kr/life-culture/press/?page={page_num}" if page_num > 1 else "https://www.news1.kr/life-culture/press/"
-                n1_resp = requests.get(n1_sec_url, headers=cls.HEADERS, timeout=5, verify=False)
-                if n1_resp.status_code == 200:
-                    n1_soup = BeautifulSoup(n1_resp.content, "html.parser")
-                    nd_script = n1_soup.find("script", id="__NEXT_DATA__")
-                    if nd_script and nd_script.string:
-                        import json
-                        nd_data = json.loads(nd_script.string)
-                        sub_data = nd_data.get("props", {}).get("pageProps", {}).get("subsectionData", [])
-                        for item in sub_data:
-                            art_id = item.get("id")
-                            art_tit = item.get("title", "")
-                            art_pub = str(item.get("pubdate", ""))[:10]
-                            art_sum = item.get("summary", "")
-                            target_url = f"https://www.news1.kr/life-culture/press/{art_id}"
-                            if target_url in seen_urls:
-                                continue
-                            if not is_personnel_article_title(art_tit):
-                                continue
-                            # 쿼리가 특정 인명이나 매체명인 경우 해당 키워드가 제목이나 요약에 포함되어 있는지 검증
-                            if not is_general_personnel:
-                                if clean_q not in art_tit and clean_q not in art_sum:
-                                    continue
-                            seen_urls.add(target_url)
-                            articles.append({
-                                "title": art_tit,
-                                "url": target_url,
-                                "media": "뉴스1",
-                                "date_text": art_pub
-                            })
-                            if len(articles) >= max_items:
-                                break
-        except Exception as e:
-            print(f"[News1 Direct Section Search Error] {e}")
+        # 인사 태그를 제외한 실제 핵심 검색어(인명, 매체명 등) 추출
+        target_keyword = re.sub(r"[\[<【(]?\s*인사\s*[\]>】)]?", "", clean_q).strip()
+        is_general_personnel = (len(target_keyword) == 0)
 
-        # 1. 구글 뉴스 RSS: site:news1.kr 및 site:yna.co.kr 정밀 타겟팅 검색
-        rss_targets = [
-            (f'"{clean_q}" site:news1.kr', "뉴스1"),
-            (f'"{clean_q}" site:yna.co.kr', "연합뉴스")
-        ]
-        if not is_general_personnel:
-            rss_targets.insert(0, (f'"{clean_q}" "[인사]" site:news1.kr', "뉴스1"))
-            rss_targets.insert(1, (f'"{clean_q}" "[인사]" site:yna.co.kr', "연합뉴스"))
+        # 1. 네이버 검색: 뉴스1(421) 및 연합뉴스(001) 기사 실시간 최우선 수집
+        if "뉴스1" in clean_q or "연합뉴스" in clean_q:
+            wire_queries = [clean_q]
+        elif target_keyword:
+            wire_queries = [
+                f"{target_keyword} [인사] 뉴스1",
+                f"{target_keyword} [인사] 연합뉴스"
+            ]
+        else:
+            wire_queries = [f"{clean_q} 뉴스1", f"{clean_q} 연합뉴스"]
 
-        for q_rss, default_press in rss_targets:
-            if len(articles) >= max_items:
-                break
-            try:
-                g_url = f"https://news.google.com/rss/search?q={quote(q_rss)}&hl=ko&gl=KR&ceid=KR:ko"
-                g_resp = requests.get(g_url, headers=cls.HEADERS, timeout=5, verify=False)
-                if g_resp.status_code == 200:
-                    import xml.etree.ElementTree as ET
-                    root = ET.fromstring(g_resp.content)
-                    for item in root.findall(".//item"):
-                        tit_elem = item.find("title")
-                        link_elem = item.find("link")
-                        pub_elem = item.find("pubDate")
-                        if tit_elem is not None and link_elem is not None:
-                            raw_title = tit_elem.text or ""
-                            link = link_elem.text or ""
-                            date_str = ""
-                            if pub_elem is not None and pub_elem.text:
-                                try:
-                                    import email.utils
-                                    dt = email.utils.parsedate_to_datetime(pub_elem.text)
-                                    date_str = dt.strftime("%Y-%m-%d")
-                                    if dt.year < start_year or dt.year > end_year:
-                                        continue
-                                except Exception:
-                                    pass
-
-                            wire_media = default_press
-                            if " - " in raw_title:
-                                parts = raw_title.rsplit(" - ", 1)
-                                title = parts[0].strip()
-                                if "뉴스1" in parts[1]:
-                                    wire_media = "뉴스1"
-                                elif "연합뉴스" in parts[1]:
-                                    wire_media = "연합뉴스"
-                            else:
-                                title = raw_title.strip()
-
-                            if link and link not in seen_urls and is_valid_wire_article(title, link, wire_media):
-                                seen_urls.add(link)
-                                articles.append({
-                                    "title": title,
-                                    "url": link,
-                                    "media": wire_media,
-                                    "date_text": date_str
-                                })
-                                if len(articles) >= max_items:
-                                    break
-            except Exception as e:
-                print(f"[Google RSS Wire Search Error] {e}")
-
-        # 2. 네이버 검색: 뉴스1 및 연합뉴스 기사 엄격 필터링
-        wire_queries = [f"{clean_q} 뉴스1", f"{clean_q} 연합뉴스"]
         for wq in wire_queries:
             if len(articles) >= max_items:
                 break
-            # 2-1. 네이버 공식 검색 API
+            # 1-1. 네이버 공식 검색 API
             if client_id and client_secret:
                 api_sort_opts = ["date", "sim"] if sort_first == "date" else ["sim", "date"]
                 for s_opt in api_sort_opts:
@@ -1302,7 +1224,7 @@ class OnlineNewsTracker:
                     except Exception as e:
                         print(f"[Naver API Search Error] {e}")
 
-            # 2-2. 네이버 모바일 웹 검색 (뉴스1 / 연합뉴스 인링크 우선 선택)
+            # 1-2. 네이버 모바일 웹 검색 (뉴스1 / 연합뉴스 인링크 직접 탐색)
             try:
                 n_sort = "1" if sort_first == "date" else "0"
                 nso_sort = "so:dd" if n_sort == "1" else "so:r"
@@ -1310,14 +1232,12 @@ class OnlineNewsTracker:
                 resp = requests.get(naver_url, headers=cls.HEADERS_MOBILE, timeout=6, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.content, "html.parser")
-                    # 모바일 웹 DOM 내 모든 뉴스 링크 및 기사 카드 전면 탐색
                     for a_elem in soup.find_all("a"):
                         href = a_elem.get("href", "")
                         title = html.unescape(a_elem.get_text(strip=True))
                         if not href or href in seen_urls or len(title) < 3:
                             continue
 
-                        # 뉴스1(421) 및 연합뉴스(001) 인링크 또는 언론사 직접 도메인 판별
                         press_name = ""
                         if "article/421/" in href or "news1.kr" in href or "뉴스1" in title:
                             press_name = "뉴스1"
@@ -1337,7 +1257,7 @@ class OnlineNewsTracker:
             except Exception as e:
                 print(f"[Naver Web Search Error] {e}")
 
-        # 3. 다음 뉴스 검색 (뉴스1 및 연합뉴스 기사 엄격 필터링)
+        # 2. 다음 뉴스 검색 (뉴스1 및 연합뉴스 기사 엄격 필터링)
         for wq in wire_queries:
             if len(articles) >= max_items:
                 break
@@ -1375,6 +1295,112 @@ class OnlineNewsTracker:
                                 break
             except Exception as e:
                 print(f"[Daum Search Error] {e}")
+
+        # 3. 뉴스1 공식 인사 섹션(life-culture/press) 직접 탐색 (당일/최신 공식 인사 누락 방지)
+        if len(articles) < max_items:
+            try:
+                for page_num in [1, 2]:
+                    if len(articles) >= max_items:
+                        break
+                    n1_sec_url = f"https://www.news1.kr/life-culture/press/?page={page_num}" if page_num > 1 else "https://www.news1.kr/life-culture/press/"
+                    n1_resp = requests.get(n1_sec_url, headers=cls.HEADERS, timeout=5, verify=False)
+                    if n1_resp.status_code == 200:
+                        n1_soup = BeautifulSoup(n1_resp.content, "html.parser")
+                        nd_script = n1_soup.find("script", id="__NEXT_DATA__")
+                        if nd_script and nd_script.string:
+                            import json
+                            nd_data = json.loads(nd_script.string)
+                            sub_data = nd_data.get("props", {}).get("pageProps", {}).get("subsectionData", [])
+                            for item in sub_data:
+                                art_id = item.get("id")
+                                art_tit = item.get("title", "")
+                                art_pub = str(item.get("pubdate", ""))[:10]
+                                art_sum = item.get("summary", "")
+                                target_url = f"https://www.news1.kr/life-culture/press/{art_id}"
+                                if target_url in seen_urls:
+                                    continue
+                                if not is_personnel_article_title(art_tit):
+                                    continue
+                                if not is_general_personnel:
+                                    if target_keyword not in art_tit and target_keyword not in art_sum:
+                                        continue
+                                seen_urls.add(target_url)
+                                articles.append({
+                                    "title": art_tit,
+                                    "url": target_url,
+                                    "media": "뉴스1",
+                                    "date_text": art_pub
+                                })
+                                if len(articles) >= max_items:
+                                    break
+            except Exception as e:
+                print(f"[News1 Direct Section Search Error] {e}")
+
+        # 4. 구글 뉴스 RSS: site:news1.kr 및 site:yna.co.kr 보조 검색
+        if len(articles) < max_items:
+            if target_keyword:
+                rss_targets = [
+                    (f'"{target_keyword}" "[인사]" site:news1.kr', "뉴스1"),
+                    (f'"{target_keyword}" "[인사]" site:yna.co.kr', "연합뉴스"),
+                    (f'{target_keyword} 인사 site:news1.kr', "뉴스1"),
+                    (f'{target_keyword} 인사 site:yna.co.kr', "연합뉴스")
+                ]
+            else:
+                rss_targets = [
+                    (f'"{clean_q}" site:news1.kr', "뉴스1"),
+                    (f'"{clean_q}" site:yna.co.kr', "연합뉴스")
+                ]
+
+            for q_rss, default_press in rss_targets:
+                if len(articles) >= max_items:
+                    break
+                try:
+                    g_url = f"https://news.google.com/rss/search?q={quote(q_rss)}&hl=ko&gl=KR&ceid=KR:ko"
+                    g_resp = requests.get(g_url, headers=cls.HEADERS, timeout=5, verify=False)
+                    if g_resp.status_code == 200:
+                        import xml.etree.ElementTree as ET
+                        root = ET.fromstring(g_resp.content)
+                        for item in root.findall(".//item"):
+                            tit_elem = item.find("title")
+                            link_elem = item.find("link")
+                            pub_elem = item.find("pubDate")
+                            if tit_elem is not None and link_elem is not None:
+                                raw_title = tit_elem.text or ""
+                                link = link_elem.text or ""
+                                date_str = ""
+                                if pub_elem is not None and pub_elem.text:
+                                    try:
+                                        import email.utils
+                                        dt = email.utils.parsedate_to_datetime(pub_elem.text)
+                                        date_str = dt.strftime("%Y-%m-%d")
+                                        if dt.year < start_year or dt.year > end_year:
+                                            continue
+                                    except Exception:
+                                        pass
+
+                                wire_media = default_press
+                                if " - " in raw_title:
+                                    parts = raw_title.rsplit(" - ", 1)
+                                    title = parts[0].strip()
+                                    if "뉴스1" in parts[1]:
+                                        wire_media = "뉴스1"
+                                    elif "연합뉴스" in parts[1]:
+                                        wire_media = "연합뉴스"
+                                else:
+                                    title = raw_title.strip()
+
+                                if link and link not in seen_urls and is_valid_wire_article(title, link, wire_media):
+                                    seen_urls.add(link)
+                                    articles.append({
+                                        "title": title,
+                                        "url": link,
+                                        "media": wire_media,
+                                        "date_text": date_str
+                                    })
+                                    if len(articles) >= max_items:
+                                        break
+                except Exception as e:
+                    print(f"[Google RSS Wire Search Error] {e}")
 
         return articles
 
@@ -1489,6 +1515,11 @@ class OnlineNewsTracker:
                         else:
                             result["media"] = normalize_media_name(press_meta.get_text(strip=True))
 
+                # 포털 인링크인 경우 통신사 원문 기사 링크(Origin Link, 예: news1.kr 또는 yna.co.kr 링크) 추출
+                orig_link_elem = soup.select_one("a.media_end_head_origin_link")
+                if orig_link_elem and orig_link_elem.get("href"):
+                    result["origin_url"] = orig_link_elem.get("href").strip()
+
                 # 실제 기사 발행 일자 추출
                 if not result.get("pub_date"):
                     result["pub_date"] = cls.extract_pub_date(final_url, soup, full_text)
@@ -1539,14 +1570,13 @@ class OnlineNewsTracker:
                 break
 
             interval_queries = [
+                f'{name} [인사] 뉴스1',
+                f'{name} [인사] 연합뉴스',
                 f'[인사] "{name}"',
-                f'<인사> "{name}"',
-                f'[인사] 신문 "{name}"',
-                f'[인사] 경제 "{name}"',
             ]
             # 이미 발견된 소속 언론사가 있다면 과거 기사 탐색 쿼리 맨 앞에 우선 배치하여 정확도 극대화
             for km in list(known_medias):
-                interval_queries.insert(0, f'[인사] {km} "{name}"')
+                interval_queries.insert(0, f'{km} "{name}" [인사]')
 
             # 최근 연도(2024~2026)는 최신순(sort_first='date')을 우선 실행하여 최신 인사 정보를 누락 없이 확보
             sort_order_for_interval = "date" if ey >= 2024 else "sim"
@@ -1587,13 +1617,14 @@ class OnlineNewsTracker:
                     media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
                     article_pub_date = fetched.get("pub_date") or art.get("date_text") or f"{sy}-01-01"
 
+                    final_u = fetched.get("origin_url") or u
                     # 인사 발령문 파싱
                     recs = PersonnelRegexParser.parse_article_text(
                         article_text=body,
                         default_media=media,
                         article_title=art["title"],
                         pub_date=article_pub_date,
-                        article_url=u
+                        article_url=final_u
                     )
                     matched_recs = [
                         r for r in recs 
@@ -2137,7 +2168,7 @@ class MediaDatabase:
     def get_all_reporters(self) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM reporters ORDER BY name ASC")
+            cursor.execute("SELECT * FROM reporters ORDER BY last_seen DESC, name ASC")
             return [dict(row) for row in cursor.fetchall()]
 
     @staticmethod

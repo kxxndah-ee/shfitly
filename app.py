@@ -725,6 +725,8 @@ with tab_search:
     if active_name:
         matched_reporters = [r for r in filtered_reporters if active_name in r["name"]] if filtered_reporters else [r for r in all_reporters if active_name in r["name"]]
         if matched_reporters:
+            # 최신 활동 및 발령일자(last_seen DESC) 순으로 정렬하여 가장 최근 소속 언론인이 기본 선택되도록 보장
+            matched_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
             if len(matched_reporters) > 1:
                 options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
                 selected_label = st.selectbox(
@@ -738,6 +740,7 @@ with tab_search:
         else:
             st.info(f"온라인 인사 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
     elif filtered_reporters:
+        filtered_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
         if len(filtered_reporters) > 1:
             options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
             selected_label = st.selectbox(
