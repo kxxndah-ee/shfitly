@@ -248,8 +248,16 @@ MEDIA_KEYWORDS: List[str] = [
     "tv", "kbs", "mbc", "sbs", "ytn", "jtbc", "tv조선", "채널a", "mbn", "ebs", "cbs", "bbs", "tbs",
     "연합뉴스", "뉴스1", "뉴시스", "한겨레", "오마이뉴스", "프레시안", "노컷뉴스", "더팩트", "아이뉴스24", "지디넷",
     "조선비즈", "매경", "한경", "서경", "아경", "머니투데이", "이데일리", "디지털타임스", "전자신문", "조세일보", "스포츠조선",
-    "스포츠동아", "스포츠서울", "스포츠경향", "일간스포츠", "시사in", "시사저널", "주간조선", "주간동아", "한겨레21"
+    "스포츠동아", "스포츠서울", "스포츠경향", "일간스포츠", "시사in", "시사저널", "주간조선", "주간동아", "한겨레21",
+    "투데이", "토마토", "블로터", "더벨", "인사이트", "위키트리", "웨이", "포스트", "포커스", "바이어스", "테크m",
+    "월간", "주간", "잡지", "전문지", "통신사", "비즈", "이코노믹", "워치", "파이낸셜"
 ]
+
+KNOWN_MEDIA_NAMES: set = {
+    "아시아투데이", "파이낸셜뉴스", "이투데이", "뉴스토마토", "머니s", "블로터", "더벨", "비즈한국",
+    "비즈니스워치", "글로벌이코노믹", "신아일보", "아주경제", "브릿지경제", "한국정경신문", "스마트에프엔",
+    "fetv", "뉴스핌", "뉴스웨이", "뉴스포스트", "메트로신문", "에너지경제"
+}
 
 NON_MEDIA_KEYWORDS: List[str] = [
     "부처", "기획재정부", "교육부", "과기정통부", "외교부", "통일부", "법무부", "국방부", "행안부", "보훈부",
@@ -272,6 +280,8 @@ def is_media_organization(name: str) -> bool:
     n = name.lower().strip()
     if n in ["2010년", "2011년", "제1", "미상", "온라인뉴스", "뉴스", "언론사", "기자", "본사", "지사", "편집국", "보도국"]:
         return False
+    if n in KNOWN_MEDIA_NAMES:
+        return True
     # 직급명이나 직책명이 포함된 경우 언론사명이 아님
     if any(r in n for r in ["부장", "차장", "국장", "팀장", "소장", "실장", "본부장", "위원", "기자", "대표", "이사"]):
         return False
@@ -337,15 +347,20 @@ class PersonnelRegexParser:
     # 이메일 추출 패턴
     EMAIL_PATTERN = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 
-    # 발령 액션 헤더 패턴 (예: <승진>, ◇전보, [국장급] 등)
+    # 발령 액션 헤더 패턴 (예: <승진>, ◇전보, [국장급], <임용> 등)
     ACTION_HEADER_PATTERN = re.compile(
-        r"(?:<|◇|◆|\[|\(|【)(승진|전보|보직|보임|선임|신규|신규선임|전출|전입|파견|퇴임|위촉)(?:>|◇|◆|\]|\)|】)"
+        r"(?:<|◇|◆|\[|\(|【)(승진|전보|보직|보임|선임|신규|신규선임|임용|임명|채용|선출|영입|전출|전입|파견|퇴임|위촉|이동|전임)(?:>|◇|◆|\]|\)|】)"
     )
 
     # 미디어 헤더 패턴 (한 기사 내 여러 언론사 구분용)
     MEDIA_HEADER_PATTERN = re.compile(
-        r"(?:◆|◇|■|□|◎|●|【|\[|<)\s*([가-힣0-9A-Za-z]+(?:일보|경제|뉴스|신문|타임스|미디어|데일리|헤럴드|통신|방송|TV|mbc|kbs|sbs|ytn|jtbc|뉴스1|뉴시스|연합뉴스|한겨레))\s*(?:】|\]|>|◆|◇|■|□|◎|●)?"
+        r"(?:◆|◇|■|□|◎|●|【|\[|<)\s*([가-힣0-9A-Za-z]+(?:일보|경제|뉴스|신문|타임스|타임즈|미디어|데일리|헤럴드|통신|방송|TV|mbc|kbs|sbs|ytn|jtbc|뉴스1|뉴시스|연합뉴스|한겨레|투데이|토마토|블로터|더벨|파이낸셜))\s*(?:】|\]|>|◆|◇|■|□|◎|●)?"
     )
+
+    ACTION_CANDIDATES: List[str] = [
+        "승진", "전보", "보임", "보직", "선임", "신규선임", "임용", "임명", "채용",
+        "선출", "영입", "전출", "전입", "파견", "퇴임", "위촉", "이동", "전임"
+    ]
 
     @classmethod
     def clean_name(cls, name_candidate: str) -> Optional[str]:
@@ -356,6 +371,8 @@ class PersonnelRegexParser:
         if not re.fullmatch(r"[가-힣]{2,4}", name):
             return None
         if name in STOPWORDS:
+            return None
+        if name in RANK_HIERARCHY or any(name == r for r in RANK_HIERARCHY):
             return None
         if is_media_organization(name):
             return None
@@ -395,7 +412,7 @@ class PersonnelRegexParser:
         current_section_rank = ""
 
         # 줄 단위 또는 불릿 기호 단위로 분할 처리
-        lines = [line.strip() for line in article_text.splitlines() if line.strip()]
+        lines = [html.unescape(line).strip() for line in article_text.splitlines() if line.strip()]
 
         for line in lines:
             # 0. 푸터, 제보 및 문의 안내 문구 스킵
@@ -409,9 +426,9 @@ class PersonnelRegexParser:
                 if is_media_organization(cand_media):
                     current_media = normalize_media_name(cand_media)
 
-            # 2. 발령 액션 및 섹션 직급 헤더 감지 (예: ◇부장대우 승진, ◇차장 승진, <승진>, ◇전보 등)
+            # 2. 발령 액션 및 섹션 직급 헤더 감지 (예: ◇부장대우 승진, ◇차장 승진, <승진>, <보임>, <임용>, ◇전보 등)
             clean_hdr = re.sub(r"^[◇◆■▲△▼▷▶<\[\(【\s]+", "", line).strip()
-            for act_cand in ["승진", "전보", "보임", "보직", "선임", "신규선임", "전출", "전입", "파견", "퇴임", "위촉"]:
+            for act_cand in cls.ACTION_CANDIDATES:
                 if act_cand in clean_hdr:
                     current_action = act_cand
                     break
@@ -434,10 +451,10 @@ class PersonnelRegexParser:
                     current_media = normalize_media_name(cand_media_clean)
                     continue
 
-                # 4-2. 항목 단위 발령 액션 및 섹션 직급 헤더 감지 (예: <부장대우 승진>, <승진>, <전보> 등)
+                # 4-2. 항목 단위 발령 액션 및 섹션 직급 헤더 감지 (예: <부장대우 승진>, <승진>, <보임>, <임용>, <전보> 등)
                 clean_item_hdr = re.sub(r"^[<\[\(【\s]+|[>\]\)】\s]+$", "", item).strip()
                 item_has_header = False
-                for act_cand in ["승진", "전보", "보임", "보직", "선임", "신규선임", "전출", "전입", "파견", "퇴임", "위촉"]:
+                for act_cand in cls.ACTION_CANDIDATES:
                     if act_cand in clean_item_hdr:
                         current_action = act_cand
                         item_has_header = True
@@ -459,15 +476,18 @@ class PersonnelRegexParser:
                 else:
                     item_clean = item
 
-                # 괄호 패턴 사전 분석 (예: 정치부장(홍길동) 또는 홍길동(정치부장))
-                parenthesis_match1 = re.search(r"([가-힣]+)\(([가-힣]{2,4})\)", item_clean)
-                parenthesis_match2 = re.search(r"([가-힣]{2,4})\(([가-힣]+)\)", item_clean)
-                if parenthesis_match1 and cls.clean_name(parenthesis_match1.group(2)):
-                    item_clean = f"{parenthesis_match1.group(1)} {parenthesis_match1.group(2)}"
-                elif parenthesis_match2 and cls.clean_name(parenthesis_match2.group(1)):
-                    item_clean = f"{parenthesis_match2.group(2)} {parenthesis_match2.group(1)}"
-                else:
-                    item_clean = re.sub(r"\([가-힣\w\s·]+\)", "", item_clean).strip()
+                # 괄호 패턴 정제 (예: 생활경제부장(부국장대우) 오승범 또는 정치부장(홍길동))
+                # 1) 직급/발령 보조 설명 괄호 제거 (예: (부국장대우), (국장급), (승진), (전보), (보임), (임용), (직대), (대우), (겸 ...))
+                item_clean = re.sub(r"\((?:[가-힣\w\s·-]*?(?:대우|급|승진|전보|보임|임용|보직|선임|직대|겸|전)[가-힣\w\s·-]*?)\)", "", item_clean)
+                # 2) 한자 표기 괄호 제거 (예: 홍길동(洪吉童))
+                item_clean = re.sub(r"\([一-龥\s]+\)", "", item_clean)
+                # 3) 직책 뒤 괄호 안에 이름이 있는 경우 (예: 정치부장(홍길동))
+                m_name_inside = re.search(r"([가-힣]{2,})\(([가-힣]{2,4})\)", item_clean)
+                if m_name_inside and cls.clean_name(m_name_inside.group(2)):
+                    item_clean = item_clean[:m_name_inside.start()] + f"{m_name_inside.group(1)} {m_name_inside.group(2)}" + item_clean[m_name_inside.end():]
+                # 4) 기타 잔여 괄호 정리
+                item_clean = re.sub(r"\([가-힣\w\s·-]*\)", "", item_clean)
+                item_clean = re.sub(r"\s+", " ", item_clean).strip()
 
                 # 서브 아이템 파싱 (쉼표, 슬래시, 세미콜론 등으로 나열된 경우)
                 sub_records = cls._parse_single_bullet(
@@ -838,7 +858,8 @@ class PersonnelTrackerEngine:
                 # 2) 직급이 강등될 경우 이직에서 제외 (Demotion Filter)
                 # 3) 동명이인 필터링: 유사한 부서/도메인일 경우에만 이직으로 인정
                 
-                is_within_6_months = (0 < days_diff <= 180) or (has_same_email and 0 < days_diff <= 365)
+                is_recruit_action = record.get("action_type") in ["임용", "영입", "전입", "이동"]
+                is_within_transfer_window = (0 < days_diff <= 365) or (has_same_email and 0 < days_diff <= 730) or (is_recruit_action and 0 < days_diff <= 730)
                 is_demoted = (rank_diff < 0)
                 
                 # 부서 및 도메인 유사도 검증
@@ -848,9 +869,11 @@ class PersonnelTrackerEngine:
                 kw_match = bool(last_kw and rec_kw and (last_kw & rec_kw))
                 is_similar_dept = (domain_sim >= 0.5) or kw_match or (rec_domain == last_domain and rec_domain != "일반") or has_same_email
 
-                if is_within_6_months and not is_demoted and is_similar_dept:
+                if is_within_transfer_window and not is_demoted and is_similar_dept:
                     # 정상적인 매체 간 이직 판정
                     score += 65.0 + domain_sim * 30.0 + max(0.0, 25.0 - (days_diff / 10.0))
+                    if is_recruit_action:
+                        score += 30.0
                     if -1 <= rank_diff <= 2:
                         score += 20.0
                     
@@ -873,15 +896,15 @@ class PersonnelTrackerEngine:
                         )
                     }
                 else:
-                    # 6개월 초과, 직급 강등, 또는 비유사 부서: 이직에서 제외 및 동명이인 분리 가중치
+                    # 전입 기간 초과, 직급 강등, 또는 비유사 부서: 이직에서 제외 및 동명이인 분리 가중치
                     is_job_change = False
                     candidate_change_meta = None
                     if is_demoted:
                         score -= 90.0  # 직급 강등 시 동명이인으로 분리
                     if not is_similar_dept and not has_same_email:
                         score -= 90.0  # 부서 무관 시 동명이인으로 분리
-                    if not is_within_6_months and not has_same_email:
-                        score -= 50.0  # 6개월 초과 시 이직 미인정
+                    if not is_within_transfer_window and not has_same_email:
+                        score -= 50.0  # 기간 초과 시 이직 미인정
 
             if score > best_score:
                 best_score = score
@@ -1039,6 +1062,12 @@ class OnlineNewsTracker:
         "Upgrade-Insecure-Requests": "1"
     }
 
+    HEADERS_MOBILE = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+
     @classmethod
     def extract_pub_date(cls, url: str, soup: BeautifulSoup, raw_text: str = "") -> Optional[str]:
         """기사 URL 또는 본문/HTML 메타데이터에서 실제 기사 발행 일자(YYYY-MM-DD)를 정밀 추출합니다."""
@@ -1101,143 +1130,78 @@ class OnlineNewsTracker:
         sort_first: str = "date"
     ) -> List[Dict[str, Any]]:
         """
-        포털(다음·네이버·구글 뉴스 RSS) 및 네이버 공식 검색 API를 통해 기사 목록을 수집합니다.
-        최신 기사를 누락 없이 신속하게 가져오기 위해 sort_first='date' 기본값으로 최신순 검색을 우선 수행합니다.
+        뉴스1 및 연합뉴스 공식 [인사] 기사만을 엄격하게 실시간 수집합니다.
+        (통신사 뉴스1·연합뉴스를 통해 유통되는 전 매체 공식 인사 기사 수집 보장)
         """
-        encoded_query = quote(query)
-        articles = []
+        articles: List[Dict[str, Any]] = []
         seen_urls = set()
 
-        # 0. 네이버 공식 검색 API (API 키가 유효하게 제공된 경우)
-        if client_id and client_secret:
-            api_sort_opts = ["date", "sim"] if sort_first == "date" else ["sim", "date"]
-            for s_opt in api_sort_opts:
+        def is_valid_wire_article(tit: str, u: str, pr: str) -> bool:
+            if not is_personnel_article_title(tit):
+                return False
+            # 오직 뉴스1과 연합뉴스 기사만 허용
+            if pr in ["뉴스1", "연합뉴스"]:
+                return True
+            if "news1.kr" in u or "yna.co.kr" in u:
+                return True
+            return False
+
+        # 0. 뉴스1 공식 인사 섹션(life-culture/press) 직접 탐색 (당일/최신 공식 인사 누락 방지)
+        clean_q = query.replace('"', '').replace("'", "").strip()
+        is_general_personnel = any(k in clean_q for k in ["[인사]", "<인사>", "인사"])
+        try:
+            for page_num in [1, 2]:
                 if len(articles) >= max_items:
                     break
-                try:
-                    api_url = "https://openapi.naver.com/v1/search/news.json"
-                    api_headers = {
-                        "X-Naver-Client-Id": client_id,
-                        "X-Naver-Client-Secret": client_secret,
-                        **cls.HEADERS
-                    }
-                    api_params = {"query": query, "display": min(max_items, 30), "sort": s_opt}
-                    api_resp = requests.get(api_url, headers=api_headers, params=api_params, timeout=5, verify=False)
-                    if api_resp.status_code == 200:
-                        api_data = api_resp.json()
-                        for it in api_data.get("items", []):
-                            raw_tit = re.sub(r"<[^>]+>", "", it.get("title", "")).strip()
-                            raw_tit = raw_tit.replace("&quot;", '"').replace("&amp;", '&').replace("&lt;", '<').replace("&gt;", '>')
-                            target_url = it.get("link", "") or it.get("originallink", "")
-                            if target_url and target_url not in seen_urls:
-                                seen_urls.add(target_url)
-                                # pubDate 파싱
-                                pub_d = it.get("pubDate", "")
-                                date_str = ""
-                                if pub_d:
-                                    dm = re.search(r"(\d{4})", pub_d)
-                                    if dm:
-                                        try:
-                                            import email.utils
-                                            dt = email.utils.parsedate_to_datetime(pub_d)
-                                            date_str = dt.strftime("%Y-%m-%d")
-                                        except Exception:
-                                            pass
-                                articles.append({
-                                    "title": raw_tit,
-                                    "url": target_url,
-                                    "media": "온라인뉴스",
-                                    "date_text": date_str
-                                })
-                                if len(articles) >= max_items:
-                                    break
-                except Exception as e:
-                    print(f"[Naver API Search Error] {e}")
+                n1_sec_url = f"https://www.news1.kr/life-culture/press/?page={page_num}" if page_num > 1 else "https://www.news1.kr/life-culture/press/"
+                n1_resp = requests.get(n1_sec_url, headers=cls.HEADERS, timeout=5, verify=False)
+                if n1_resp.status_code == 200:
+                    n1_soup = BeautifulSoup(n1_resp.content, "html.parser")
+                    nd_script = n1_soup.find("script", id="__NEXT_DATA__")
+                    if nd_script and nd_script.string:
+                        import json
+                        nd_data = json.loads(nd_script.string)
+                        sub_data = nd_data.get("props", {}).get("pageProps", {}).get("subsectionData", [])
+                        for item in sub_data:
+                            art_id = item.get("id")
+                            art_tit = item.get("title", "")
+                            art_pub = str(item.get("pubdate", ""))[:10]
+                            art_sum = item.get("summary", "")
+                            target_url = f"https://www.news1.kr/life-culture/press/{art_id}"
+                            if target_url in seen_urls:
+                                continue
+                            if not is_personnel_article_title(art_tit):
+                                continue
+                            # 쿼리가 특정 인명이나 매체명인 경우 해당 키워드가 제목이나 요약에 포함되어 있는지 검증
+                            if not is_general_personnel:
+                                if clean_q not in art_tit and clean_q not in art_sum:
+                                    continue
+                            seen_urls.add(target_url)
+                            articles.append({
+                                "title": art_tit,
+                                "url": target_url,
+                                "media": "뉴스1",
+                                "date_text": art_pub
+                            })
+                            if len(articles) >= max_items:
+                                break
+        except Exception as e:
+            print(f"[News1 Direct Section Search Error] {e}")
 
-        # 1. 다음 뉴스 검색 (최신순 우선 + 관련도순)
-        daum_sort_opts = ["recency", "accuracy"] if sort_first == "date" else ["accuracy", "recency"]
-        for daum_sort in daum_sort_opts:
+        # 1. 구글 뉴스 RSS: site:news1.kr 및 site:yna.co.kr 정밀 타겟팅 검색
+        rss_targets = [
+            (f'"{clean_q}" site:news1.kr', "뉴스1"),
+            (f'"{clean_q}" site:yna.co.kr', "연합뉴스")
+        ]
+        if not is_general_personnel:
+            rss_targets.insert(0, (f'"{clean_q}" "[인사]" site:news1.kr', "뉴스1"))
+            rss_targets.insert(1, (f'"{clean_q}" "[인사]" site:yna.co.kr', "연합뉴스"))
+
+        for q_rss, default_press in rss_targets:
             if len(articles) >= max_items:
                 break
             try:
-                daum_url = f"https://search.daum.net/search?w=news&q={encoded_query}&sort={daum_sort}&period=u&sd={start_year}0101000000&ed={end_year}1231235959"
-                resp = requests.get(daum_url, headers=cls.HEADERS, timeout=6, verify=False)
-                if resp.status_code == 200:
-                    soup = BeautifulSoup(resp.content, "html.parser")
-                    card_items = soup.select("div.c-item-content, li.bx, div.item-title, ul.list_news > li")
-                    for it in card_items:
-                        tit_a = it.select_one("strong.tit-doc a, .item-title a, a.tit_main, a.c-tit-doc")
-                        if not tit_a:
-                            continue
-                        # 다음뉴스 인링크(v.daum.net) 우선 선택 -> 본문 텍스트 완전 보장 및 차단 방지
-                        daum_inlink = it.select_one("a[href*='v.daum.net/v/'], a[href*='news.v.daum.net/v/']")
-                        href = daum_inlink.get("href", "") if daum_inlink else tit_a.get("href", "")
-                        if not href or href in seen_urls:
-                            continue
-                        title = html.unescape(tit_a.get_text(strip=True))
-                        if len(title) < 3 or not is_personnel_article_title(title):
-                            continue
-
-                        press_elem = it.select_one(".item-subinfo .txt_info, a.f_nb, span.c-tit-info, .gem-subinfo a, span.info")
-                        press_name = press_elem.get_text(strip=True) if press_elem else "온라인뉴스"
-
-                        seen_urls.add(href)
-                        d_match = re.search(r"v\.daum\.net/v/(\d{4})(\d{2})(\d{2})", href)
-                        d_text = f"{d_match.group(1)}-{d_match.group(2)}-{d_match.group(3)}" if d_match else ""
-                        articles.append({
-                            "title": title,
-                            "url": href,
-                            "media": press_name,
-                            "date_text": d_text
-                        })
-                        if len(articles) >= max_items:
-                            break
-            except Exception as e:
-                print(f"[Daum Search Error] {e}")
-
-        # 2. 네이버 뉴스 검색 (최신순 우선 + 관련도순)
-        n_sort_opts = ["1", "0"] if sort_first == "date" else ["0", "1"]
-        for n_sort in n_sort_opts:
-            if len(articles) >= max_items:
-                break
-            try:
-                nso_sort = "so:dd" if n_sort == "1" else "so:r"
-                naver_url = f"https://m.search.naver.com/search.naver?where=m_news&query={encoded_query}&sort={n_sort}&ds={start_year}.01.01&de={end_year}.12.31&nso={nso_sort},p:from{start_year}0101to{end_year}1231,a:all"
-                resp = requests.get(naver_url, headers=cls.HEADERS, timeout=6, verify=False)
-                if resp.status_code == 200:
-                    soup = BeautifulSoup(resp.content, "html.parser")
-                    for it in soup.select("div.news_wrap, div.news_area, li.bx, div.bx"):
-                        tit_a = it.select_one("a.news_tit, a.api_txt_lines, a.tit")
-                        if not tit_a:
-                            continue
-                        title = html.unescape(tit_a.get_text(strip=True))
-                        if len(title) < 3 or not is_personnel_article_title(title):
-                            continue
-
-                        # 네이버뉴스 인링크(n.news.naver.com) 우선 선택 -> 403 차단 및 JS 미렌더링 원천 방지
-                        naver_inlink = it.select_one("a.info[href*='news.naver.com'], a[href*='n.news.naver.com'], a[href*='m.news.naver.com']")
-                        href = naver_inlink.get("href", "") if naver_inlink else tit_a.get("href", "")
-                        if not href or href in seen_urls:
-                            continue
-
-                        press_elem = it.select_one("a.info.press, span.info, span.press")
-                        press_name = press_elem.get_text(strip=True) if press_elem else "온라인뉴스"
-                        seen_urls.add(href)
-                        articles.append({
-                            "title": title,
-                            "url": href,
-                            "media": press_name,
-                            "date_text": ""
-                        })
-                        if len(articles) >= max_items:
-                            break
-            except Exception as e:
-                print(f"[Naver Search Error] {e}")
-
-        # 3. 구글 뉴스 RSS (최신 연도 검색 시에만 fallback 활성화하여 과거 검색 오염 방지)
-        if end_year >= 2025 and len(articles) < max_items:
-            try:
-                g_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
+                g_url = f"https://news.google.com/rss/search?q={quote(q_rss)}&hl=ko&gl=KR&ceid=KR:ko"
                 g_resp = requests.get(g_url, headers=cls.HEADERS, timeout=5, verify=False)
                 if g_resp.status_code == 200:
                     import xml.etree.ElementTree as ET
@@ -1260,99 +1224,280 @@ class OnlineNewsTracker:
                                 except Exception:
                                     pass
 
-                            if link and link not in seen_urls:
-                                seen_urls.add(link)
-                                media = "온라인뉴스"
-                                if " - " in raw_title:
-                                    parts = raw_title.rsplit(" - ", 1)
-                                    title = parts[0].strip()
-                                    media = normalize_media_name(parts[1].strip())
-                                else:
-                                    title = raw_title.strip()
+                            wire_media = default_press
+                            if " - " in raw_title:
+                                parts = raw_title.rsplit(" - ", 1)
+                                title = parts[0].strip()
+                                if "뉴스1" in parts[1]:
+                                    wire_media = "뉴스1"
+                                elif "연합뉴스" in parts[1]:
+                                    wire_media = "연합뉴스"
+                            else:
+                                title = raw_title.strip()
 
+                            if link and link not in seen_urls and is_valid_wire_article(title, link, wire_media):
+                                seen_urls.add(link)
                                 articles.append({
                                     "title": title,
                                     "url": link,
-                                    "media": media,
+                                    "media": wire_media,
                                     "date_text": date_str
                                 })
                                 if len(articles) >= max_items:
                                     break
             except Exception as e:
-                print(f"[Google RSS Search Error] {e}")
+                print(f"[Google RSS Wire Search Error] {e}")
+
+        # 2. 네이버 검색: 뉴스1 및 연합뉴스 기사 엄격 필터링
+        wire_queries = [f"{clean_q} 뉴스1", f"{clean_q} 연합뉴스"]
+        for wq in wire_queries:
+            if len(articles) >= max_items:
+                break
+            # 2-1. 네이버 공식 검색 API
+            if client_id and client_secret:
+                api_sort_opts = ["date", "sim"] if sort_first == "date" else ["sim", "date"]
+                for s_opt in api_sort_opts:
+                    if len(articles) >= max_items:
+                        break
+                    try:
+                        api_url = "https://openapi.naver.com/v1/search/news.json"
+                        api_headers = {
+                            "X-Naver-Client-Id": client_id,
+                            "X-Naver-Client-Secret": client_secret,
+                            **cls.HEADERS
+                        }
+                        api_params = {"query": wq, "display": min(max_items, 30), "sort": s_opt}
+                        api_resp = requests.get(api_url, headers=api_headers, params=api_params, timeout=5, verify=False)
+                        if api_resp.status_code == 200:
+                            api_data = api_resp.json()
+                            for it in api_data.get("items", []):
+                                raw_tit = re.sub(r"<[^>]+>", "", it.get("title", "")).strip()
+                                raw_tit = raw_tit.replace("&quot;", '"').replace("&amp;", '&').replace("&lt;", '<').replace("&gt;", '>')
+                                target_url = it.get("link", "") or it.get("originallink", "")
+                                p_guess = "뉴스1" if "news1.kr" in target_url else ("연합뉴스" if "yna.co.kr" in target_url else "")
+                                if not p_guess and "뉴스1" in wq:
+                                    p_guess = "뉴스1"
+                                elif not p_guess and "연합뉴스" in wq:
+                                    p_guess = "연합뉴스"
+
+                                if target_url and target_url not in seen_urls and is_valid_wire_article(raw_tit, target_url, p_guess):
+                                    seen_urls.add(target_url)
+                                    pub_d = it.get("pubDate", "")
+                                    date_str = ""
+                                    if pub_d:
+                                        try:
+                                            import email.utils
+                                            dt = email.utils.parsedate_to_datetime(pub_d)
+                                            date_str = dt.strftime("%Y-%m-%d")
+                                        except Exception:
+                                            pass
+                                    articles.append({
+                                        "title": raw_tit,
+                                        "url": target_url,
+                                        "media": p_guess,
+                                        "date_text": date_str
+                                    })
+                                    if len(articles) >= max_items:
+                                        break
+                    except Exception as e:
+                        print(f"[Naver API Search Error] {e}")
+
+            # 2-2. 네이버 모바일 웹 검색 (뉴스1 / 연합뉴스 인링크 우선 선택)
+            try:
+                n_sort = "1" if sort_first == "date" else "0"
+                nso_sort = "so:dd" if n_sort == "1" else "so:r"
+                naver_url = f"https://m.search.naver.com/search.naver?where=m_news&query={quote(wq)}&sort={n_sort}&ds={start_year}.01.01&de={end_year}.12.31&nso={nso_sort},p:from{start_year}0101to{end_year}1231,a:all"
+                resp = requests.get(naver_url, headers=cls.HEADERS_MOBILE, timeout=6, verify=False)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.content, "html.parser")
+                    # 모바일 웹 DOM 내 모든 뉴스 링크 및 기사 카드 전면 탐색
+                    for a_elem in soup.find_all("a"):
+                        href = a_elem.get("href", "")
+                        title = html.unescape(a_elem.get_text(strip=True))
+                        if not href or href in seen_urls or len(title) < 3:
+                            continue
+
+                        # 뉴스1(421) 및 연합뉴스(001) 인링크 또는 언론사 직접 도메인 판별
+                        press_name = ""
+                        if "article/421/" in href or "news1.kr" in href or "뉴스1" in title:
+                            press_name = "뉴스1"
+                        elif "article/001/" in href or "yna.co.kr" in href or "연합뉴스" in title:
+                            press_name = "연합뉴스"
+
+                        if press_name and is_valid_wire_article(title, href, press_name):
+                            seen_urls.add(href)
+                            articles.append({
+                                "title": title,
+                                "url": href,
+                                "media": press_name,
+                                "date_text": ""
+                            })
+                            if len(articles) >= max_items:
+                                break
+            except Exception as e:
+                print(f"[Naver Web Search Error] {e}")
+
+        # 3. 다음 뉴스 검색 (뉴스1 및 연합뉴스 기사 엄격 필터링)
+        for wq in wire_queries:
+            if len(articles) >= max_items:
+                break
+            try:
+                daum_sort = "recency" if sort_first == "date" else "accuracy"
+                daum_url = f"https://search.daum.net/search?w=news&q={quote(wq)}&sort={daum_sort}&period=u&sd={start_year}0101000000&ed={end_year}1231235959"
+                resp = requests.get(daum_url, headers=cls.HEADERS, timeout=6, verify=False)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.content, "html.parser")
+                    card_items = soup.select("div.c-item-content, li.bx, div.item-title, ul.list_news > li")
+                    for it in card_items:
+                        tit_a = it.select_one("strong.tit-doc a, .item-title a, a.tit_main, a.c-tit-doc")
+                        if not tit_a:
+                            continue
+                        title = html.unescape(tit_a.get_text(strip=True))
+                        press_elem = it.select_one(".item-subinfo .txt_info, a.f_nb, span.c-tit-info, .gem-subinfo a, span.info")
+                        press_name = press_elem.get_text(strip=True) if press_elem else ""
+
+                        daum_inlink = it.select_one("a[href*='v.daum.net/v/'], a[href*='news.v.daum.net/v/']")
+                        href = daum_inlink.get("href", "") if daum_inlink else tit_a.get("href", "")
+                        if not href or href in seen_urls:
+                            continue
+
+                        if is_valid_wire_article(title, href, press_name):
+                            seen_urls.add(href)
+                            d_match = re.search(r"v\.daum\.net/v/(\d{4})(\d{2})(\d{2})", href)
+                            d_text = f"{d_match.group(1)}-{d_match.group(2)}-{d_match.group(3)}" if d_match else ""
+                            articles.append({
+                                "title": title,
+                                "url": href,
+                                "media": "뉴스1" if ("뉴스1" in press_name or "news1.kr" in href) else "연합뉴스",
+                                "date_text": d_text
+                            })
+                            if len(articles) >= max_items:
+                                break
+            except Exception as e:
+                print(f"[Daum Search Error] {e}")
 
         return articles
 
     @classmethod
     def fetch_full_text(cls, url: str) -> Dict[str, Any]:
-        """기사 URL에 직접 접속하여 100% 원문 본문, 언론사명, 실제 발행 일자, 이메일을 추출합니다."""
+        """
+        기사 URL에 접속하여 100% 원문 본문, 언론사명, 실제 발행 일자, 이메일을 추출합니다.
+        뉴스1(Next.js __NEXT_DATA__ JSON) 및 연합뉴스(story-news DOM) 최신 아키텍처를 완벽 지원합니다.
+        """
         result = {"text": "", "media": "온라인뉴스", "email": None, "pub_date": None}
         if not url or not str(url).startswith("http"):
             return result
 
         try:
-            resp = requests.get(url, headers=cls.HEADERS, timeout=8, verify=False)
+            resp = requests.get(url, headers=cls.HEADERS, timeout=8, verify=False, allow_redirects=True)
             if resp.status_code == 200:
-                # resp.content 전달로 BeautifulSoup이 UTF-8, EUC-KR, CP949를 자동 완벽 판별하도록 보장
+                final_url = resp.url
                 soup = BeautifulSoup(resp.content, "html.parser")
+                full_text = ""
 
-                # 언론사명 파악
-                press_meta = (
-                    soup.select_one("meta[property='og:article:author']") or
-                    soup.select_one("meta[property='og:site_name']") or
-                    soup.select_one("meta[name='twitter:creator']") or
-                    soup.select_one("meta[name='dable:author']") or
-                    soup.select_one(".info_cp .tit_cp, .link_cp, .media_end_head_top_logo img, .press_logo img")
-                )
-                if press_meta:
-                    if press_meta.name == "img" and press_meta.get("alt"):
-                        result["media"] = normalize_media_name(press_meta.get("alt"))
-                    elif press_meta.has_attr("content"):
-                        result["media"] = normalize_media_name(press_meta.get("content"))
+                # 1. 뉴스1 등 Next.js 기반 사이트 (__NEXT_DATA__ JSON 내 원문 본문 파싱)
+                next_data = soup.find("script", id="__NEXT_DATA__")
+                if next_data and next_data.string:
+                    try:
+                        import json
+                        nd_obj = json.loads(next_data.string)
+                        av = nd_obj.get("props", {}).get("pageProps", {}).get("articleView", {})
+                        if av:
+                            text_blocks = []
+                            for item in av.get("contentArrange", []):
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    c = item.get("content", "")
+                                    if c:
+                                        c_clean = BeautifulSoup(html.unescape(c), "html.parser").get_text("\n")
+                                        if c_clean.strip():
+                                            text_blocks.append(c_clean.strip())
+                            if text_blocks:
+                                full_text = "\n".join(text_blocks)
+                            pubdate_raw = av.get("pubdate_at") or av.get("published_time") or ""
+                            if pubdate_raw:
+                                dm = re.search(r"(\d{4})[.\-](\d{2})[.\-](\d{2})", pubdate_raw)
+                                if dm:
+                                    result["pub_date"] = f"{dm.group(1)}-{dm.group(2)}-{dm.group(3)}"
+                            if "news1.kr" in final_url:
+                                result["media"] = "뉴스1"
+                            for em_field in [av.get("byline_bottom", ""), av.get("author", ""), full_text]:
+                                em = re.search(PersonnelRegexParser.EMAIL_PATTERN, str(em_field))
+                                if em:
+                                    result["email"] = em.group(0).strip()
+                                    break
+                    except Exception as e:
+                        pass
+
+                # 2. 일반 DOM 본문 영역 탐색 (연합뉴스 story-news 및 포털 인링크 등)
+                if not full_text:
+                    content_area = (
+                        soup.select_one("article.story-news") or
+                        soup.select_one("div.story-news") or
+                        soup.select_one("#dic_area") or
+                        soup.select_one("#newsct_article") or
+                        soup.select_one("article#dic_area") or
+                        soup.select_one("div#newsct_article") or
+                        soup.select_one("section.article-view") or
+                        soup.select_one("#harmonyContainer") or
+                        soup.select_one("div.article_view") or
+                        soup.select_one("div#article_body") or
+                        soup.select_one("div.article-body") or
+                        soup.select_one("div.article_body") or
+                        soup.select_one("div#articeBody") or
+                        soup.select_one("div.view_con") or
+                        soup.select_one("div.cnt_view") or
+                        soup.select_one("div.news_cnt") or
+                        soup.select_one("div#article-view-content-div") or
+                        soup.select_one("#articleBodyContents") or
+                        soup.select_one("div.article") or
+                        soup.select_one("div#articleWrap") or
+                        soup.select_one("div.content01") or
+                        soup.select_one("div.article-txt") or
+                        soup.select_one("article") or
+                        soup.select_one("div.article_body_contents")
+                    )
+
+                    if content_area:
+                        for tag in content_area(["script", "style", "figure", "figcaption", "aside", "nav", "header", "footer"]):
+                            tag.decompose()
+                        full_text = content_area.get_text(separator="\n", strip=True)
                     else:
-                        result["media"] = normalize_media_name(press_meta.get_text(strip=True))
-
-                # 본문 영역 탐색 (네이버·다음 및 주요 언론사 최신 CMS 레이아웃 전면 지원)
-                content_area = (
-                    soup.select_one("#dic_area") or
-                    soup.select_one("#newsct_article") or
-                    soup.select_one("article#dic_area") or
-                    soup.select_one("div#newsct_article") or
-                    soup.select_one("section.article-view") or
-                    soup.select_one("#harmonyContainer") or
-                    soup.select_one("div.article_view") or
-                    soup.select_one("div#article_body") or
-                    soup.select_one("div.article-body") or
-                    soup.select_one("div.article_body") or
-                    soup.select_one("div#articeBody") or
-                    soup.select_one("div.view_con") or
-                    soup.select_one("div.cnt_view") or
-                    soup.select_one("div.news_cnt") or
-                    soup.select_one("div#article-view-content-div") or
-                    soup.select_one("#articleBodyContents") or
-                    soup.select_one("article") or
-                    soup.select_one("div.article_body_contents")
-                )
-
-                if content_area:
-                    # 필요 없는 스크립트, 광고, 캡션 제거
-                    for tag in content_area(["script", "style", "figure", "figcaption", "aside", "nav", "header", "footer"]):
-                        tag.decompose()
-                    full_text = content_area.get_text(separator="\n", strip=True)
-                else:
-                    for tag in soup(["script", "style", "nav", "header", "footer", "form", "aside"]):
-                        tag.decompose()
-                    full_text = soup.get_text(separator="\n", strip=True)
+                        for tag in soup(["script", "style", "nav", "header", "footer", "form", "aside"]):
+                            tag.decompose()
+                        full_text = soup.get_text(separator="\n", strip=True)
 
                 result["text"] = full_text
 
-                # 실제 기사 발행 일자 추출 (30개년 연대기 타임라인 핵심)
-                result["pub_date"] = cls.extract_pub_date(url, soup, full_text)
+                # 언론사명 판별
+                if "news1.kr" in final_url:
+                    result["media"] = "뉴스1"
+                elif "yna.co.kr" in final_url:
+                    result["media"] = "연합뉴스"
+                else:
+                    press_meta = (
+                        soup.select_one("meta[property='og:article:author']") or
+                        soup.select_one("meta[property='og:site_name']") or
+                        soup.select_one("meta[name='twitter:creator']") or
+                        soup.select_one("meta[name='dable:author']") or
+                        soup.select_one(".info_cp .tit_cp, .link_cp, .media_end_head_top_logo img, .press_logo img")
+                    )
+                    if press_meta:
+                        if press_meta.name == "img" and press_meta.get("alt"):
+                            result["media"] = normalize_media_name(press_meta.get("alt"))
+                        elif press_meta.has_attr("content"):
+                            result["media"] = normalize_media_name(press_meta.get("content"))
+                        else:
+                            result["media"] = normalize_media_name(press_meta.get_text(strip=True))
+
+                # 실제 기사 발행 일자 추출
+                if not result.get("pub_date"):
+                    result["pub_date"] = cls.extract_pub_date(final_url, soup, full_text)
 
                 # 이메일 추출
-                email_match = re.search(PersonnelRegexParser.EMAIL_PATTERN, full_text)
-                if email_match:
-                    result["email"] = email_match.group(0).strip()
+                if not result.get("email"):
+                    email_match = re.search(PersonnelRegexParser.EMAIL_PATTERN, full_text)
+                    if email_match:
+                        result["email"] = email_match.group(0).strip()
 
         except Exception as e:
             print(f"[Fetch Body Error] {e}")
