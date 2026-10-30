@@ -397,19 +397,29 @@ class PersonnelRegexParser:
         if not article_text:
             return results
 
-        # 제목에서 언론사 힌트 파악 (예: [인사] 뉴스1 or <인사> 연합뉴스 or 매일경제 <인사>)
-        current_media = normalize_media_name(default_media)
-        title_media_match = re.search(r"(?:\[인사\]|<인사>|【인사】|\(인사\))\s*([가-힣A-Za-z0-9]+)", html.unescape(article_title))
+        # 제목에서 언론사 힌트 파악 (예: [인사] 아이뉴스24, [인사] 아시아투데이, [인사] 뉴스1)
+        clean_article_title = re.sub(r"(?:연합뉴스|뉴스1)?\s*\d{4}\.\d{2}\.\d{2}\.?\s*네이버뉴스.*$", "", html.unescape(article_title)).strip()
+        title_media_match = re.search(r"(?:\[인사\]|<인사>|【인사】|\(인사\))\s*([가-힣A-Za-z0-9]+)", clean_article_title)
+        rev_match = re.search(r"([가-힣A-Za-z0-9]+)\s*(?:\[인사\]|<인사>|【인사】|\(인사\))", clean_article_title)
+        
+        cand = ""
         if title_media_match:
             cand = title_media_match.group(1).strip()
+        elif rev_match:
+            cand = rev_match.group(1).strip()
+
+        if cand:
             if is_media_organization(cand):
                 current_media = normalize_media_name(cand)
+            else:
+                # 기사 제목의 대상 기관이 언론사가 아닌 경우(예: 국회사무처, 화성시, 법무부, 경찰청 등)
+                # 통신사(연합뉴스/뉴스1) 소속 인사로 오인식되지 않도록 비언론사명으로 격리
+                current_media = cand
+        elif default_media in ["뉴스1", "연합뉴스"] and any(w in clean_article_title for w in ["뉴스1", "연합뉴스"]):
+            # 기사 제목에 뉴스1/연합뉴스 자사 인사가 명시된 경우에만 통신사 자사 발령으로 인정
+            current_media = normalize_media_name(default_media)
         else:
-            rev_match = re.search(r"([가-힣A-Za-z0-9]+)\s*(?:\[인사\]|<인사>|【인사】|\(인사\))", html.unescape(article_title))
-            if rev_match:
-                cand = rev_match.group(1).strip()
-                if is_media_organization(cand):
-                    current_media = normalize_media_name(cand)
+            current_media = "비언론사"
 
         current_action = "발령"
         current_section_rank = ""
@@ -427,12 +437,21 @@ class PersonnelRegexParser:
             line = re.sub(r"\([^)]*(?:연합뉴스|뉴스1|끝)[^)]*\)", "", line)
             line = re.sub(r"\([가-힣\w\s·-]*=[가-힣\w\s·-]*\)", "", line)
 
-            # 1. 언론사 변경 감지 (기사 중간에 다른 언론사 헤더가 나올 경우)
+            # 1. 언론사/기관 변경 감지 (기사 중간에 다른 언론사/기관 헤더가 나올 경우)
             media_match = cls.MEDIA_HEADER_PATTERN.search(line)
             if media_match:
                 cand_media = media_match.group(1).strip()
                 if is_media_organization(cand_media):
                     current_media = normalize_media_name(cand_media)
+                else:
+                    current_media = cand_media
+            else:
+                clean_sec_hdr = re.sub(r"^[◇◆■▲△▼▷▶<\[\(【\s]+|[>\]\)】\s]+$", "", line).strip()
+                if len(clean_sec_hdr) <= 15 and not any(cls.clean_name(t) for t in line.split()):
+                    if is_media_organization(clean_sec_hdr):
+                        current_media = normalize_media_name(clean_sec_hdr)
+                    elif any(nmk in clean_sec_hdr for nmk in NON_MEDIA_KEYWORDS) or clean_sec_hdr.endswith(("부", "처", "청", "원", "실", "회", "공사", "공단", "재단", "시")):
+                        current_media = clean_sec_hdr
 
             # 2. 발령 액션 및 섹션 직급 헤더 감지 (예: ◇부장대우 승진, ◇차장 승진, <승진>, <보임>, <임용>, ◇전보 등)
             clean_hdr = re.sub(r"^[◇◆■▲△▼▷▶<\[\(【\s]+", "", line).strip()
@@ -453,11 +472,15 @@ class PersonnelRegexParser:
                 if not item or len(item) < 2:
                     continue
 
-                # 4-1. 항목 단위 언론사 헤더 변경 감지 (한 줄에 여러 언론사가 연달아 나오는 경우, 예: ■매경미디어그룹 ◇매일경제신문 △... ◇MBN △...)
+                # 4-1. 항목 단위 언론사/기관 헤더 변경 감지 (한 줄에 여러 언론사가 연달아 나오는 경우, 예: ■매경미디어그룹 ◇매일경제신문 △... ◇MBN △...)
                 cand_media_clean = re.sub(r"^[<\[\(【\s]+|[>\]\)】\s]+$", "", item).strip()
-                if len(cand_media_clean) <= 15 and is_media_organization(cand_media_clean) and not any(cls.clean_name(t) for t in item.split()):
-                    current_media = normalize_media_name(cand_media_clean)
-                    continue
+                if len(cand_media_clean) <= 15 and not any(cls.clean_name(t) for t in item.split()):
+                    if is_media_organization(cand_media_clean):
+                        current_media = normalize_media_name(cand_media_clean)
+                        continue
+                    elif any(nmk in cand_media_clean for nmk in NON_MEDIA_KEYWORDS) or cand_media_clean.endswith(("부", "처", "청", "원", "실", "회", "공사", "공단", "재단", "시")):
+                        current_media = cand_media_clean
+                        continue
 
                 # 4-2. 항목 단위 발령 액션 및 섹션 직급 헤더 감지 (예: <부장대우 승진>, <승진>, <보임>, <임용>, <전보> 등)
                 clean_item_hdr = re.sub(r"^[<\[\(【\s]+|[>\]\)】\s]+$", "", item).strip()
@@ -1524,11 +1547,15 @@ class OnlineNewsTracker:
                 if not result.get("pub_date"):
                     result["pub_date"] = cls.extract_pub_date(final_url, soup, full_text)
 
-                # 이메일 추출
+                # 이메일 추출 (통신사/언론사 대표 접수용 공용 이메일은 기자의 개인 이메일로 오인식되지 않도록 제외)
                 if not result.get("email"):
-                    email_match = re.search(PersonnelRegexParser.EMAIL_PATTERN, full_text)
-                    if email_match:
-                        result["email"] = email_match.group(0).strip()
+                    email_matches = re.findall(PersonnelRegexParser.EMAIL_PATTERN, full_text)
+                    for em in email_matches:
+                        em_clean = em.strip().lower()
+                        if any(em_clean.startswith(prefix) for prefix in ["opinion@", "jebo@", "desk@", "webmaster@", "contact@", "press@", "master@", "admin@", "help@", "info@", "news1@", "yna@"]):
+                            continue
+                        result["email"] = em.strip()
+                        break
 
         except Exception as e:
             print(f"[Fetch Body Error] {e}")
@@ -1572,8 +1599,18 @@ class OnlineNewsTracker:
             interval_queries = [
                 f'{name} [인사] 뉴스1',
                 f'{name} [인사] 연합뉴스',
-                f'[인사] "{name}"',
             ]
+            if ey >= 2020:
+                interval_queries.extend([
+                    f'{name} "부장" [인사] 뉴스1',
+                    f'{name} "부장" [인사] 연합뉴스',
+                    f'{name} "차장" [인사] 뉴스1',
+                    f'{name} "차장" [인사] 연합뉴스',
+                    f'{name} "팀장" [인사] 연합뉴스',
+                    f'{name} "기자" [인사] 연합뉴스',
+                    f'{name} "국장" [인사] 연합뉴스',
+                ])
+            interval_queries.append(f'[인사] "{name}"')
             # 이미 발견된 소속 언론사가 있다면 과거 기사 탐색 쿼리 맨 앞에 우선 배치하여 정확도 극대화
             for km in list(known_medias):
                 interval_queries.insert(0, f'{km} "{name}" [인사]')
