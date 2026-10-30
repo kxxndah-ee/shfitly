@@ -516,6 +516,7 @@ with tab_search:
             "검색 모드 선택",
             options=["이름 검색", "매체 및 부서별 검색"],
             horizontal=True,
+            label_visibility="collapsed",
             index=0 if st.session_state.get("search_mode_selection", "이름 검색") == "이름 검색" else 1,
             key="search_mode_radio"
         )
