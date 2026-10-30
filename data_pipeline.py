@@ -892,7 +892,8 @@ class PersonnelTrackerEngine:
                 # 3) 동명이인 필터링: 유사한 부서/도메인일 경우에만 이직으로 인정
                 
                 is_recruit_action = record.get("action_type") in ["임용", "영입", "전입", "이동"]
-                is_within_transfer_window = (0 < days_diff <= 365) or (has_same_email and 0 < days_diff <= 730) or (is_recruit_action and 0 < days_diff <= 730)
+                # 언론계 이직 탐색 기간: 단기 이직부터 일반적인 2~4년 근속 후 이직(최대 5년, 1825일)까지 폭넓게 수용
+                is_within_transfer_window = (0 < days_diff <= 1825) or has_same_email
                 is_demoted = (rank_diff < 0)
                 
                 # 부서 및 도메인 유사도 검증
@@ -904,11 +905,34 @@ class PersonnelTrackerEngine:
 
                 if is_within_transfer_window and not is_demoted and is_similar_dept:
                     # 정상적인 매체 간 이직 판정
-                    score += 65.0 + domain_sim * 30.0 + max(0.0, 25.0 - (days_diff / 10.0))
+                    score += 65.0 + domain_sim * 30.0
                     if is_recruit_action:
                         score += 30.0
-                    if -1 <= rank_diff <= 2:
-                        score += 20.0
+                    
+                    # 직급 연속성 및 승진 가점
+                    if rank_diff == 0:
+                        # 동일 직급 유지 이직 (부장->부장, 국장->국장, 차장->차장 등 데스크/관리자급 수평 이직)
+                        score += 40.0
+                    elif rank_diff == 1:
+                        # 1단계 정상 승진 이직
+                        score += 25.0
+                    elif rank_diff == 2:
+                        # 2단계 건너뛰기 승진 (차장->부장 등): 6개월 이내 초단기 이직 시 동명이인 오인식 방지
+                        if days_diff <= 180:
+                            score += 5.0
+                        else:
+                            score += 15.0
+                    else:
+                        score += 5.0
+
+                    # 근속 및 시차 가점
+                    if days_diff <= 180:
+                        score += max(0.0, 15.0 - (days_diff / 15.0))
+                    elif 180 < days_diff <= 1500:
+                        # 6개월~4년 정상 근속 후 이직
+                        score += 15.0
+                    else:
+                        score += 5.0
                     
                     is_job_change = True
                     candidate_change_meta = {
@@ -924,7 +948,7 @@ class PersonnelTrackerEngine:
                         "days_gap": days_diff,
                         "confidence_score": round(score, 1),
                         "detected_reason": (
-                            f"6개월 내 타사 이동, 부서 유사도({int(domain_sim*100)}%), "
+                            f"{'6개월 내 타사 이동' if days_diff <= 180 else f'{round(days_diff/365, 1)}년 만의 타사 이직'}, 부서 유사도({int(domain_sim*100)}%), "
                             f"{'이메일 일치' if has_same_email else '직급 승진 및 유지'}"
                         )
                     }
@@ -1604,8 +1628,10 @@ class OnlineNewsTracker:
                 interval_queries.extend([
                     f'{name} "부장" [인사] 뉴스1',
                     f'{name} "부장" [인사] 연합뉴스',
+                    f'{name} "부장대우" [인사] 연합뉴스',
                     f'{name} "차장" [인사] 뉴스1',
                     f'{name} "차장" [인사] 연합뉴스',
+                    f'{name} "차장대우" [인사] 연합뉴스',
                     f'{name} "팀장" [인사] 연합뉴스',
                     f'{name} "기자" [인사] 연합뉴스',
                     f'{name} "국장" [인사] 연합뉴스',
