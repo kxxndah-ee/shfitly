@@ -414,6 +414,61 @@ st.markdown("""
         height: 42px !important;
         min-height: 42px !important;
     }
+
+    /* ===================================================
+       주제별 섹션 구분선 및 통일된 제목 폰트 스타일
+       =================================================== */
+    .topic-section-divider {
+        border: 0;
+        border-top: 1px solid #E2E8F0;
+        margin: 36px 0 20px 0;
+    }
+
+    .topic-section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 4px;
+        margin-bottom: 16px;
+    }
+
+    .topic-title-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .topic-accent-bar {
+        display: inline-block;
+        width: 4px;
+        height: 1.25rem;
+        border-radius: 2px;
+        flex-shrink: 0;
+    }
+
+    .topic-section-title {
+        font-size: 1.35rem !important;
+        font-weight: 800 !important;
+        color: #0F172A !important;
+        letter-spacing: -0.02em;
+        line-height: 1.3;
+    }
+
+    .sub-card-box {
+        background: #F8FAFC;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        padding: 16px 20px;
+        margin-top: 6px;
+        min-height: 90px;
+    }
+
+    .sub-card-title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: #334155;
+        margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -757,7 +812,16 @@ with tab_search:
 
     # 인사 소식 (발령 명단) 테이블 표시 - 이름 검색 또는 매체/부서별 검색 결과 공통
     if matched_records:
-        st.markdown("##### 인사 소식")
+        render_html("""
+        <div class="topic-section-divider"></div>
+        <div class="topic-section-header">
+            <div class="topic-title-wrapper">
+                <span class="topic-accent-bar" style="background-color: #2563EB;"></span>
+                <span class="topic-section-title">인사 소식</span>
+                <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">실시간 발령 명단</span>
+            </div>
+        </div>
+        """)
         # 동일한 인사는 가장 빠른 기사 일자(Earliest Date) 기준으로 단일화 및 최신 발령일자순 정렬
         unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
 
@@ -809,9 +873,18 @@ with tab_search:
             csv_bytes = df_timeline.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
 
             # 1. 상단 프로필 헤더 및 다운로드 액션 바
-            col_phead, col_pdl1, col_pdl2 = st.columns([3, 1.2, 1.2])
+            render_html('<div class="topic-section-divider"></div>')
+            col_phead, col_pdl1, col_pdl2 = st.columns([3, 1.2, 1.2], vertical_alignment="center")
             with col_phead:
-                st.markdown(f"### {reporter_obj['name']} 프로필")
+                render_html(f"""
+                <div class="topic-section-header" style="margin-bottom: 0;">
+                    <div class="topic-title-wrapper">
+                        <span class="topic-accent-bar" style="background-color: #4F46E5;"></span>
+                        <span class="topic-section-title">{reporter_obj['name']} 프로필</span>
+                        <span class="badge badge-career" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">총 {metrics.get('career_years', 1)}년차</span>
+                    </div>
+                </div>
+                """)
             with col_pdl1:
                 st.download_button(
                     "프로필 엑셀 다운로드",
@@ -890,9 +963,18 @@ with tab_search:
                 """)
 
             # 4. 소속 매체 이동 로드맵 (12. 이직)
+            render_html('<div class="topic-section-divider"></div>')
+            render_html("""
+            <div class="topic-section-header">
+                <div class="topic-title-wrapper">
+                    <span class="topic-accent-bar" style="background-color: #8B5CF6;"></span>
+                    <span class="topic-section-title">이직</span>
+                    <span class="badge badge-jobchange" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">매체 이동 로드맵</span>
+                </div>
+            </div>
+            """)
             aff_list = metrics.get("affiliation_journey", [])
             if aff_list:
-                st.markdown("#### 이직")
                 roadmap_html = '<div class="roadmap-container">'
                 for idx, aff in enumerate(aff_list):
                     roadmap_html += f"""
@@ -905,45 +987,82 @@ with tab_search:
                         roadmap_html += '<div class="roadmap-arrow">➔</div>'
                 roadmap_html += '</div>'
                 render_html(roadmap_html)
+            else:
+                render_html("""
+                <div class="sub-card-box" style="color: #64748B; font-size: 0.88rem; padding: 16px 20px;">
+                    확인된 매체 간 이직 이력이 없습니다. (단일 언론사 재직)
+                </div>
+                """)
 
             # 5. 직급 성장 (13. 승진) & 출입처 도메인 분석
+            render_html('<div class="topic-section-divider"></div>')
+            render_html("""
+            <div class="topic-section-header">
+                <div class="topic-title-wrapper">
+                    <span class="topic-accent-bar" style="background-color: #10B981;"></span>
+                    <span class="topic-section-title">승진</span>
+                    <span class="badge badge-promotion" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">직급 승진 사다리 및 전문 분야</span>
+                </div>
+            </div>
+            """)
             l_col, d_col = st.columns([1.2, 1])
             with l_col:
-                st.markdown("#### 승진")
                 l_items = metrics.get("promotion_ladder", [])
                 if l_items:
-                    ladder_html = '<div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:8px;">'
+                    ladder_html = '<div class="sub-card-box">'
+                    ladder_html += '<div class="sub-card-title">직급 성장 사다리</div>'
+                    ladder_html += '<div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px;">'
                     for idx, l in enumerate(l_items):
                         ladder_html += f"""
-                        <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:6px 12px; font-size:0.85rem;">
-                            <b>{l['rank_title']}</b> <span style="color:#64748B;">{l['year']}년 {l['media']}</span>
+                        <div style="background:#FFFFFF; border:1px solid #CBD5E1; border-radius:8px; padding:6px 12px; font-size:0.85rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
+                            <b style="color:#0F172A;">{l['rank_title']}</b> <span style="color:#64748B; margin-left:4px;">{l['year']}년 {l['media']}</span>
                         </div>
                         """
                         if idx < len(l_items) - 1:
                             ladder_html += '<span style="color:#94A3B8; font-weight:700;">➔</span>'
-                    ladder_html += '</div>'
+                    ladder_html += '</div></div>'
                     render_html(ladder_html)
                 else:
-                    st.write("단일 직급 활동 기록이 확인되었습니다.")
+                    render_html("""
+                    <div class="sub-card-box">
+                        <div class="sub-card-title">직급 성장 사다리</div>
+                        <div style="color:#64748B; font-size:0.88rem;">단일 직급 활동 기록이 확인되었습니다.</div>
+                    </div>
+                    """)
 
             with d_col:
-                st.markdown("#### 출입처 도메인 전문성")
                 d_breakdown = metrics.get("domain_breakdown", [])
                 if d_breakdown:
-                    d_html = '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">'
+                    d_html = '<div class="sub-card-box">'
+                    d_html += '<div class="sub-card-title">출입처 도메인 전문성</div>'
+                    d_html += '<div style="display:flex; flex-wrap:wrap; gap:6px;">'
                     for db_item in d_breakdown[:4]:
                         d_html += f"""
-                        <span class="badge badge-normal" style="padding:6px 10px; font-size:0.8rem;">
-                            <b>{db_item['domain']}</b> {db_item['percentage']}% : {db_item['count']}건
+                        <span class="badge badge-normal" style="padding:6px 10px; font-size:0.8rem; border:1px solid #CBD5E1;">
+                            <b style="color:#0F172A;">{db_item['domain']}</b> <span style="color:#2563EB; font-weight:700;">{db_item['percentage']}%</span> <span style="color:#64748B;">({db_item['count']}건)</span>
                         </span>
                         """
-                    d_html += '</div>'
+                    d_html += '</div></div>'
                     render_html(d_html)
-
-            st.markdown("<br>", unsafe_allow_html=True)
+                else:
+                    render_html("""
+                    <div class="sub-card-box">
+                        <div class="sub-card-title">출입처 도메인 전문성</div>
+                        <div style="color:#64748B; font-size:0.88rem;">출입처 분석 데이터가 충분하지 않습니다.</div>
+                    </div>
+                    """)
 
             # 6. 연대기 타임라인 (14. 타임라인)
-            st.markdown("#### 타임라인")
+            render_html('<div class="topic-section-divider"></div>')
+            render_html("""
+            <div class="topic-section-header">
+                <div class="topic-title-wrapper">
+                    <span class="topic-accent-bar" style="background-color: #0284C7;"></span>
+                    <span class="topic-section-title">타임라인</span>
+                    <span class="badge badge-normal" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">발령 연대기</span>
+                </div>
+            </div>
+            """)
             st.caption("기사 원문 링크를 클릭하면 해당 시점의 실제 뉴스 기사 웹페이지로 이동합니다.")
 
             # 타임라인 카드 렌더링 (1. 최근순 정렬, 2. 날짜는 박스 위에 표기)
@@ -1159,7 +1278,14 @@ with tab_monitoring:
     if not media_news_list:
         st.warning("표시할 [인사]/<인사> 공식 인사 소식이 없습니다. 상단 '당일 인사 실시간 수집 및 새로고침' 버튼을 눌러 온라인 기사에서 발령 명단을 수집하세요.")
     else:
-        st.markdown("#### 언론사별 인사 소식 정리")
+        render_html("""
+        <div class="topic-section-header">
+            <div class="topic-title-wrapper">
+                <span class="topic-accent-bar" style="background-color: #2563EB;"></span>
+                <span class="topic-section-title">언론사별 인사 소식 정리</span>
+            </div>
+        </div>
+        """)
 
         for mn in media_news_list:
             m_name = normalize_media_name(mn["media"])
@@ -1219,8 +1345,16 @@ with tab_monitoring:
             """)
 
         # 전체 명단 표 & 다운로드
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 인사 소식")
+        render_html('<div class="topic-section-divider"></div>')
+        render_html("""
+        <div class="topic-section-header">
+            <div class="topic-title-wrapper">
+                <span class="topic-accent-bar" style="background-color: #2563EB;"></span>
+                <span class="topic-section-title">인사 소식</span>
+                <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">전체 명단</span>
+            </div>
+        </div>
+        """)
         
         unique_raw_recs = MediaDatabase.deduplicate_timeline_records(all_raw_recs, window_days=30, sort_desc=True)
         table_rows = []
@@ -1275,8 +1409,16 @@ with tab_monitoring:
 
         # 이직 모니터링 특이사항
         if job_changes:
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("#### 최근 매체 간 이직 모니터링")
+            render_html('<div class="topic-section-divider"></div>')
+            render_html("""
+            <div class="topic-section-header">
+                <div class="topic-title-wrapper">
+                    <span class="topic-accent-bar" style="background-color: #8B5CF6;"></span>
+                    <span class="topic-section-title">최근 매체 간 이직 모니터링</span>
+                    <span class="badge badge-jobchange" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">자동 감지</span>
+                </div>
+            </div>
+            """)
             st.caption("인사 리스트를 기반으로 자동 감지된 매체 이동 내역입니다.")
 
             for jc in job_changes[:5]:
