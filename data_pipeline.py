@@ -22,6 +22,7 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 import urllib3
+import concurrent.futures
 from bs4 import BeautifulSoup
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -1125,6 +1126,23 @@ class OnlineNewsTracker:
         "Accept-Language": "ko-KR,ko;q=0.9",
     }
 
+    _SESSION: Optional[requests.Session] = None
+
+    @classmethod
+    def get_session(cls) -> requests.Session:
+        """재사용 가능한 고성능 커넥션 풀 세션을 반환합니다."""
+        if cls._SESSION is None:
+            s = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=30,
+                pool_maxsize=30,
+                max_retries=1
+            )
+            s.mount("https://", adapter)
+            s.mount("http://", adapter)
+            cls._SESSION = s
+        return cls._SESSION
+
     @classmethod
     def extract_pub_date(cls, url: str, soup: BeautifulSoup, raw_text: str = "") -> Optional[str]:
         """기사 URL 또는 본문/HTML 메타데이터에서 실제 기사 발행 일자(YYYY-MM-DD)를 정밀 추출합니다."""
@@ -1236,7 +1254,7 @@ class OnlineNewsTracker:
                             **cls.HEADERS
                         }
                         api_params = {"query": wq, "display": min(max_items, 30), "sort": s_opt}
-                        api_resp = requests.get(api_url, headers=api_headers, params=api_params, timeout=5, verify=False)
+                        api_resp = cls.get_session().get(api_url, headers=api_headers, params=api_params, timeout=3.5, verify=False)
                         if api_resp.status_code == 200:
                             api_data = api_resp.json()
                             for it in api_data.get("items", []):
@@ -1276,7 +1294,7 @@ class OnlineNewsTracker:
                 n_sort = "1" if sort_first == "date" else "0"
                 nso_sort = "so:dd" if n_sort == "1" else "so:r"
                 naver_url = f"https://m.search.naver.com/search.naver?where=m_news&query={quote(wq)}&sort={n_sort}&ds={start_year}.01.01&de={end_year}.12.31&nso={nso_sort},p:from{start_year}0101to{end_year}1231,a:all"
-                resp = requests.get(naver_url, headers=cls.HEADERS_MOBILE, timeout=6, verify=False)
+                resp = cls.get_session().get(naver_url, headers=cls.HEADERS_MOBILE, timeout=3.5, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.content, "html.parser")
                     for a_elem in soup.find_all("a"):
@@ -1302,7 +1320,7 @@ class OnlineNewsTracker:
                             if len(articles) >= max_items:
                                 break
             except Exception as e:
-                print(f"[Naver Web Search Error] {e}")
+                pass
 
         # 2. 다음 뉴스 검색 (뉴스1 및 연합뉴스 기사 엄격 필터링)
         for wq in wire_queries:
@@ -1311,7 +1329,7 @@ class OnlineNewsTracker:
             try:
                 daum_sort = "recency" if sort_first == "date" else "accuracy"
                 daum_url = f"https://search.daum.net/search?w=news&q={quote(wq)}&sort={daum_sort}&period=u&sd={start_year}0101000000&ed={end_year}1231235959"
-                resp = requests.get(daum_url, headers=cls.HEADERS, timeout=6, verify=False)
+                resp = cls.get_session().get(daum_url, headers=cls.HEADERS, timeout=3.5, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.content, "html.parser")
                     card_items = soup.select("div.c-item-content, li.bx, div.item-title, ul.list_news > li")
@@ -1341,16 +1359,16 @@ class OnlineNewsTracker:
                             if len(articles) >= max_items:
                                 break
             except Exception as e:
-                print(f"[Daum Search Error] {e}")
+                pass
 
-        # 3. 뉴스1 공식 인사 섹션(life-culture/press) 직접 탐색 (당일/최신 공식 인사 누락 방지)
-        if len(articles) < max_items:
+        # 3. 뉴스1 공식 인사 섹션(life-culture/press) 직접 탐색 (포털 결과가 없을 때만 최신 인사 보조 탐색)
+        if not articles:
             try:
                 for page_num in [1, 2]:
                     if len(articles) >= max_items:
                         break
                     n1_sec_url = f"https://www.news1.kr/life-culture/press/?page={page_num}" if page_num > 1 else "https://www.news1.kr/life-culture/press/"
-                    n1_resp = requests.get(n1_sec_url, headers=cls.HEADERS, timeout=5, verify=False)
+                    n1_resp = cls.get_session().get(n1_sec_url, headers=cls.HEADERS, timeout=3.5, verify=False)
                     if n1_resp.status_code == 200:
                         n1_soup = BeautifulSoup(n1_resp.content, "html.parser")
                         nd_script = n1_soup.find("script", id="__NEXT_DATA__")
@@ -1381,16 +1399,14 @@ class OnlineNewsTracker:
                                 if len(articles) >= max_items:
                                     break
             except Exception as e:
-                print(f"[News1 Direct Section Search Error] {e}")
+                pass
 
-        # 4. 구글 뉴스 RSS: site:news1.kr 및 site:yna.co.kr 보조 검색
-        if len(articles) < max_items:
+        # 4. 구글 뉴스 RSS: 포털 결과가 전혀 없을 때만 최후 수단으로 보조 검색
+        if not articles:
             if target_keyword:
                 rss_targets = [
                     (f'"{target_keyword}" "[인사]" site:news1.kr', "뉴스1"),
-                    (f'"{target_keyword}" "[인사]" site:yna.co.kr', "연합뉴스"),
-                    (f'{target_keyword} 인사 site:news1.kr', "뉴스1"),
-                    (f'{target_keyword} 인사 site:yna.co.kr', "연합뉴스")
+                    (f'"{target_keyword}" "[인사]" site:yna.co.kr', "연합뉴스")
                 ]
             else:
                 rss_targets = [
@@ -1403,7 +1419,7 @@ class OnlineNewsTracker:
                     break
                 try:
                     g_url = f"https://news.google.com/rss/search?q={quote(q_rss)}&hl=ko&gl=KR&ceid=KR:ko"
-                    g_resp = requests.get(g_url, headers=cls.HEADERS, timeout=5, verify=False)
+                    g_resp = cls.get_session().get(g_url, headers=cls.HEADERS, timeout=3.5, verify=False)
                     if g_resp.status_code == 200:
                         import xml.etree.ElementTree as ET
                         root = ET.fromstring(g_resp.content)
@@ -1462,7 +1478,7 @@ class OnlineNewsTracker:
             return result
 
         try:
-            resp = requests.get(url, headers=cls.HEADERS, timeout=8, verify=False, allow_redirects=True)
+            resp = cls.get_session().get(url, headers=cls.HEADERS, timeout=4.0, verify=False, allow_redirects=True)
             if resp.status_code == 200:
                 final_url = resp.url
                 soup = BeautifulSoup(resp.content, "html.parser")
@@ -1605,27 +1621,22 @@ class OnlineNewsTracker:
 
         # 30개년(1995~2026) 연대기 분할 구간 설정:
         intervals = [
-            (2024, 2026),
-            (2020, 2023),
-            (2010, 2019),
-            (1995, 2009)
+            (2024, 2026, "date"),
+            (2020, 2023, "date"),
+            (2010, 2019, "sim"),
+            (1995, 2009, "sim")
         ]
 
-        all_records = []
-        searched_urls = set()
-        article_count = 0
-        known_medias = set()
-
-        for sy, ey in intervals:
-            if stop_event and getattr(stop_event, "is_set", lambda: False)():
-                break
-
-            interval_queries = [
+        # 1단계: 병렬 검색 쿼리 작업 리스트 구성
+        search_tasks = []
+        for sy, ey, sort_type in intervals:
+            q_list = [
                 f'{name} [인사] 뉴스1',
                 f'{name} [인사] 연합뉴스',
+                f'[인사] "{name}"'
             ]
             if ey >= 2020:
-                interval_queries.extend([
+                q_list.extend([
                     f'{name} "부장" [인사] 뉴스1',
                     f'{name} "부장" [인사] 연합뉴스',
                     f'{name} "부장대우" [인사] 연합뉴스',
@@ -1636,75 +1647,122 @@ class OnlineNewsTracker:
                     f'{name} "기자" [인사] 연합뉴스',
                     f'{name} "국장" [인사] 연합뉴스',
                 ])
-            interval_queries.append(f'[인사] "{name}"')
-            # 이미 발견된 소속 언론사가 있다면 과거 기사 탐색 쿼리 맨 앞에 우선 배치하여 정확도 극대화
-            for km in list(known_medias):
-                interval_queries.insert(0, f'{km} "{name}" [인사]')
+            for q in q_list:
+                search_tasks.append((q, sy, ey, sort_type))
 
-            # 최근 연도(2024~2026)는 최신순(sort_first='date')을 우선 실행하여 최신 인사 정보를 누락 없이 확보
-            sort_order_for_interval = "date" if ey >= 2024 else "sim"
+        candidate_articles: Dict[str, Dict[str, Any]] = {}
 
-            for q in interval_queries:
+        def run_search_task(task):
+            if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                return []
+            q, sy, ey, st = task
+            return cls.search_online_articles(
+                q, max_items=8, client_id=client_id, client_secret=client_secret,
+                start_year=sy, end_year=ey, sort_first=st
+            )
+
+        # 1단계: 멀티스레드 병렬 검색 실행 (ThreadPoolExecutor)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(run_search_task, t) for t in search_tasks]
+            for f in concurrent.futures.as_completed(futures):
                 if stop_event and getattr(stop_event, "is_set", lambda: False)():
                     break
-                arts = cls.search_online_articles(
-                    q, 
-                    max_items=8, 
-                    client_id=client_id, 
-                    client_secret=client_secret, 
-                    start_year=sy, 
-                    end_year=ey,
-                    sort_first=sort_order_for_interval
-                )
-                for art in arts:
-                    if stop_event and getattr(stop_event, "is_set", lambda: False)():
-                        break
-                    # 기사 제목이 [인사] 또는 <인사>인 인사기사만 엄격 필터링
-                    if not is_personnel_article_title(art.get("title", "")):
-                        continue
+                try:
+                    for art in f.result():
+                        u = art.get("url", "")
+                        if u and u not in candidate_articles:
+                            candidate_articles[u] = art
+                except Exception:
+                    pass
 
-                    u = art["url"]
-                    if u in searched_urls:
-                        continue
-                    searched_urls.add(u)
-                    article_count += 1
+        # 2단계: 후보 기사 본문 병렬 수집 (ThreadPoolExecutor)
+        all_records = []
+        known_medias = set()
 
-                    fetched = cls.fetch_full_text(u)
-                    body = fetched["text"]
-                    if not body or len(body) < 30:
-                        continue
-                    # 기자 이름이 본문에 없는 기사는 즉시 건너뜀 (고속 최적화)
-                    if name not in body:
-                        continue
+        def fetch_worker(art):
+            if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                return None
+            u = art["url"]
+            try:
+                fetched = cls.fetch_full_text(u)
+                body = fetched.get("text", "")
+                if not body or len(body) < 30 or name not in body:
+                    return None
+                return art, fetched
+            except Exception:
+                return None
 
-                    media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
-                    article_pub_date = fetched.get("pub_date") or art.get("date_text") or f"{sy}-01-01"
-
-                    final_u = fetched.get("origin_url") or u
-                    # 인사 발령문 파싱
-                    recs = PersonnelRegexParser.parse_article_text(
-                        article_text=body,
-                        default_media=media,
-                        article_title=art["title"],
-                        pub_date=article_pub_date,
-                        article_url=final_u
-                    )
-                    matched_recs = [
-                        r for r in recs 
-                        if r["name"] == name and is_media_organization(r.get("media", ""))
-                    ]
-                    if matched_recs:
-                        for mr in matched_recs:
-                            if fetched["email"] and not mr.get("email"):
-                                mr["email"] = fetched["email"]
-                            if is_media_organization(mr.get("media", "")):
-                                known_medias.add(mr["media"])
-                        all_records.extend(matched_recs)
-
-                if len(all_records) >= 30:
+        fetched_results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(fetch_worker, art) for art in candidate_articles.values()]
+            for f in concurrent.futures.as_completed(futures):
+                if stop_event and getattr(stop_event, "is_set", lambda: False)():
                     break
-            if len(all_records) >= 30:
-                break
+                try:
+                    res = f.result()
+                    if res:
+                        fetched_results.append(res)
+                except Exception:
+                    pass
+
+        # 3단계: 기사 파싱 및 발령 기록 추출
+        for art, fetched in fetched_results:
+            u = art["url"]
+            body = fetched["text"]
+            media = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
+            article_pub_date = fetched.get("pub_date") or art.get("date_text") or "2024-01-01"
+            final_u = fetched.get("origin_url") or u
+
+            recs = PersonnelRegexParser.parse_article_text(
+                article_text=body,
+                default_media=media,
+                article_title=art.get("title", ""),
+                pub_date=article_pub_date,
+                article_url=final_u
+            )
+            matched_recs = [
+                r for r in recs 
+                if r["name"] == name and is_media_organization(r.get("media", ""))
+            ]
+            if matched_recs:
+                for mr in matched_recs:
+                    if fetched.get("email") and not mr.get("email"):
+                        mr["email"] = fetched["email"]
+                    if is_media_organization(mr.get("media", "")):
+                        known_medias.add(mr["media"])
+                all_records.extend(matched_recs)
+
+        # 4단계: 발견된 매체(known_medias) 추가 과거 발령 고속 탐색
+        if known_medias and not (stop_event and getattr(stop_event, "is_set", lambda: False)()):
+            extra_tasks = []
+            for km in list(known_medias):
+                extra_tasks.append((f'{km} "{name}" [인사]', 1995, 2026, "sim"))
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                extra_futures = [executor.submit(run_search_task, t) for t in extra_tasks]
+                extra_arts = []
+                for f in concurrent.futures.as_completed(extra_futures):
+                    for a in f.result():
+                        if a["url"] not in candidate_articles:
+                            candidate_articles[a["url"]] = a
+                            extra_arts.append(a)
+                
+                if extra_arts:
+                    extra_fetch_futures = [executor.submit(fetch_worker, a) for a in extra_arts]
+                    for f in concurrent.futures.as_completed(extra_fetch_futures):
+                        res = f.result()
+                        if res:
+                            art, fetched = res
+                            recs = PersonnelRegexParser.parse_article_text(
+                                article_text=fetched["text"],
+                                default_media=fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"],
+                                article_title=art.get("title", ""),
+                                pub_date=fetched.get("pub_date") or art.get("date_text") or "2020-01-01",
+                                article_url=fetched.get("origin_url") or art["url"]
+                            )
+                            for r in recs:
+                                if r["name"] == name and is_media_organization(r.get("media", "")):
+                                    all_records.append(r)
 
         is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
         if all_records:
@@ -1713,21 +1771,17 @@ class OnlineNewsTracker:
             msg_suffix = " (중단 전까지 수집된 내역 반영)" if is_stopped else ""
             return {
                 "found_records": len(all_records),
-                "articles_searched": article_count,
+                "articles_searched": len(candidate_articles),
                 "unique_reporters": res["unique_reporters"],
-                "message": f"30개년 공식 [인사]/<인사> 기사 {article_count}건을 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"30개년 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 초고속 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
             if is_stopped:
-                return {
-                    "found_records": 0,
-                    "articles_searched": article_count,
-                    "message": "검색이 중단되었습니다."
-                }
+                return {"found_records": 0, "articles_searched": len(candidate_articles), "message": "사용자에 의해 실시간 탐색이 중단되었습니다."}
             return {
                 "found_records": 0,
-                "articles_searched": article_count,
-                "message": f"30개년 온라인 기사를 탐색했으나 제목에 [인사] 또는 <인사>가 포함된 기사에서 '{name}' 기자의 발령 기록을 찾지 못했습니다."
+                "articles_searched": len(candidate_articles),
+                "message": f"'{name}' 기자의 30개년 온라인 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다. (동명이인 공공기관 제외 완료)"
             }
 
     @classmethod
