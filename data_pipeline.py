@@ -184,6 +184,10 @@ def normalize_media_name(raw_name: str) -> str:
     name = re.sub(r"^\s*인사\s*|\s*인사\s*$", "", name)
     name = re.sub(r"^[◇◆■●◎▲△▼▷▶·\-\*:<\[\(【〈«\s]+|[◇◆■●◎▲△▼▷▶·\-\*:>\]\)】〉»\s]+$", "", name)
 
+    # 영문 표기 또는 괄호 부가설명 제거 (예: (the bell), (The Bell), (주), (신문) 등)
+    name = re.sub(r"\([A-Za-z0-9\s\.\-_&]+\)", "", name).strip()
+    name = re.sub(r"[<\[【〈«](?:전보|승진|보임|보직|발령|인사|종합)[^>\]】〉»]*[>\]】〉»]", "", name).strip()
+
     # 2. 편집국, 보도국, 논설실 등 부서/국/본부 설명 제거
     name = re.sub(r"\s*(편집국|보도국|보도본부|디지털뉴스국|디지털뉴스본부|디지털국|논설실|논설위원실|신문총괄|경영총괄|미디어본부|방송본부|뉴스총괄)\b.*$", "", name)
 
@@ -193,6 +197,22 @@ def normalize_media_name(raw_name: str) -> str:
         name = name[:-1]
 
     # 4. 주요 언론사 매핑 및 표준화 규칙
+    if "더벨" in name: return "더벨"
+    if "팍스넷" in name: return "팍스넷뉴스"
+    if "비즈니스워치" in name or "비즈워치" in name: return "비즈워치"
+    if "토마토" in name: return "뉴스토마토"
+    if "블로터" in name: return "블로터"
+    if "이투데이" in name: return "이투데이"
+    if "아시아투데이" in name: return "아시아투데이"
+    if "뉴스핌" in name: return "뉴스핌"
+    if "지디넷" in name: return "지디넷코리아"
+    if "오마이" in name: return "오마이뉴스"
+    if "프레시안" in name: return "프레시안"
+    if "노컷" in name: return "노컷뉴스"
+    if "더팩트" in name: return "더팩트"
+    if "아이뉴스" in name: return "아이뉴스24"
+    if "데일리안" in name: return "데일리안"
+    if "머니s" in name.lower(): return "머니S"
     if "조선일보" in name or ("조선" in name and "일보" in raw_name): return "조선일보"
     if "중앙일보" in name or ("중앙" in name and "일보" in raw_name): return "중앙일보"
     if "동아일보" in name or ("동아" in name and "일보" in raw_name): return "동아일보"
@@ -375,7 +395,7 @@ class PersonnelRegexParser:
 
     # 미디어 헤더 패턴 (한 기사 내 여러 언론사 구분용)
     MEDIA_HEADER_PATTERN = re.compile(
-        r"(?:◆|◇|■|□|◎|●|【|\[|<)\s*([가-힣0-9A-Za-z]+(?:일보|경제|뉴스|신문|타임스|타임즈|미디어|데일리|헤럴드|통신|방송|TV|mbc|kbs|sbs|ytn|jtbc|뉴스1|뉴시스|연합뉴스|한겨레|투데이|토마토|블로터|더벨|파이낸셜))\s*(?:】|\]|>|◆|◇|■|□|◎|●)?"
+        r"(?:◆|◇|■|□|◎|●|【|\[|<)\s*([가-힣0-9A-Za-z]*(?:일보|경제|뉴스|신문|타임스|타임즈|미디어|데일리|헤럴드|통신|방송|TV|mbc|kbs|sbs|ytn|jtbc|뉴스1|뉴시스|연합뉴스|한겨레|투데이|토마토|블로터|더벨|파이낸셜|팍스넷|지디넷|비즈워치|비즈니스워치|이투데이|뉴스핌))(?:\([^\)]*\))?\s*(?:】|\]|>|◆|◇|■|□|◎|●)?"
     )
 
     ACTION_CANDIDATES: List[str] = [
@@ -467,6 +487,8 @@ class PersonnelRegexParser:
                     current_media = cand_media
             else:
                 clean_sec_hdr = re.sub(r"^[◇◆■▲△▼▷▶<\[\(【\s]+|[>\]\)】\s]+$", "", line).strip()
+                clean_sec_hdr = re.sub(r"\([^\)]*\)", "", clean_sec_hdr).strip()
+                clean_sec_hdr = re.split(r"[\]\)>】〉»<\[\(【〈«]", clean_sec_hdr)[0].strip()
                 if len(clean_sec_hdr) <= 15 and not any(cls.clean_name(t) for t in line.split()):
                     if is_media_organization(clean_sec_hdr):
                         current_media = normalize_media_name(clean_sec_hdr)
@@ -494,6 +516,8 @@ class PersonnelRegexParser:
 
                 # 4-1. 항목 단위 언론사/기관 헤더 변경 감지 (한 줄에 여러 언론사가 연달아 나오는 경우, 예: ■매경미디어그룹 ◇매일경제신문 △... ◇MBN △...)
                 cand_media_clean = re.sub(r"^[<\[\(【\s]+|[>\]\)】\s]+$", "", item).strip()
+                cand_media_clean = re.sub(r"\([^\)]*\)", "", cand_media_clean).strip()
+                cand_media_clean = re.split(r"[\]\)>】〉»<\[\(【〈«]", cand_media_clean)[0].strip()
                 if len(cand_media_clean) <= 15 and not any(cls.clean_name(t) for t in item.split()):
                     if is_media_organization(cand_media_clean):
                         current_media = normalize_media_name(cand_media_clean)
@@ -1851,8 +1875,12 @@ class OnlineNewsTracker:
             if media_clean and rank_clean and dept_clean:
                 q_list.extend([
                     f'{media_clean} "{dept_clean}" "{rank_clean}" [인사]',
+                    f'{media_clean} "{dept_clean}" [인사]',
                     f'{media_clean} {dept_clean} [인사]',
-                    f'{media_clean} {rank_clean} [인사]',
+                    f'{media_clean} "{rank_clean}" [인사]',
+                    f'{media_clean} [인사]',
+                    f'[인사] {media_clean}',
+                    f'[인사] <{media_clean}>',
                     f'{media_clean} [인사] 뉴스1',
                     f'{media_clean} [인사] 연합뉴스',
                 ])
@@ -1860,24 +1888,30 @@ class OnlineNewsTracker:
                 q_list.extend([
                     f'{media_clean} "{rank_clean}" [인사]',
                     f'{media_clean} [인사] "{rank_clean}"',
-                    f'[인사] <{media_clean}> {rank_clean}',
+                    f'{media_clean} [인사]',
+                    f'[인사] {media_clean}',
+                    f'[인사] <{media_clean}>',
                     f'{media_clean} [인사] 뉴스1',
                     f'{media_clean} [인사] 연합뉴스',
                 ])
             elif media_clean and dept_clean:
                 q_list.extend([
                     f'{media_clean} "{dept_clean}" [인사]',
-                    f'[인사] <{media_clean}> {dept_clean}',
+                    f'{media_clean} {dept_clean} [인사]',
+                    f'{media_clean} [인사]',
+                    f'[인사] {media_clean}',
+                    f'[인사] <{media_clean}>',
                     f'{media_clean} [인사] 뉴스1',
                     f'{media_clean} [인사] 연합뉴스',
                 ])
             elif media_clean:
                 q_list.extend([
-                    f'{media_clean} [인사] 뉴스1',
-                    f'{media_clean} [인사] 연합뉴스',
+                    f'{media_clean} [인사]',
+                    f'[인사] {media_clean}',
                     f'[인사] <{media_clean}>',
                     f'[인사] ◇ {media_clean}',
-                    f'[인사] {media_clean}',
+                    f'{media_clean} [인사] 뉴스1',
+                    f'{media_clean} [인사] 연합뉴스',
                 ])
             elif rank_clean and dept_clean:
                 q_list.extend([
@@ -1935,8 +1969,6 @@ class OnlineNewsTracker:
                 except Exception:
                     pass
 
-        all_records = []
-
         def fetch_worker(art):
             if stop_event and getattr(stop_event, "is_set", lambda: False)():
                 return None
@@ -1946,12 +1978,12 @@ class OnlineNewsTracker:
                 body = fetched.get("text", "")
                 if not body or len(body) < 30:
                     return None
-                # 본문 내 직급/부서/매체 필터링
-                if rank_clean and rank_clean not in body and rank_clean not in art.get("title", ""):
-                    return None
-                if dept_clean and dept_clean not in body and dept_clean not in art.get("title", ""):
-                    return None
+                # 본문 내 직급/부서/매체 필터링: 매체명이 있는 경우 매체명 존재 여부 확인
                 if media_clean and media_clean not in body and media_clean not in art.get("title", ""):
+                    return None
+                if not media_clean and dept_clean and dept_clean not in body and dept_clean not in art.get("title", ""):
+                    return None
+                if not media_clean and not dept_clean and rank_clean and rank_clean not in body and rank_clean not in art.get("title", ""):
                     return None
                 return art, fetched
             except Exception:
@@ -1970,6 +2002,7 @@ class OnlineNewsTracker:
                 except Exception:
                     pass
 
+        all_parsed_records = []
         for art, fetched in fetched_results:
             u = art["url"]
             body = fetched["text"]
@@ -1991,23 +2024,63 @@ class OnlineNewsTracker:
                         r["media"] = normalize_media_name(media_clean)
                     else:
                         continue
-                if dept_clean and dept_clean not in r.get("dept", ""):
-                    continue
-                if rank_clean and (rank_clean not in r.get("rank_title", "") and rank_clean not in r.get("dept", "")):
-                    continue
-                all_records.append(r)
+                all_parsed_records.append(r)
+
+        # 1. 수집된 모든 유효 언론인 발령 레코드를 DB에 전수 등록 (지식 베이스 누적)
+        engine_res = {"unique_reporters": 0}
+        if all_parsed_records:
+            engine = PersonnelTrackerEngine()
+            engine_res = engine.process_records(all_parsed_records, append=True)
+
+        # 2. 사용자가 요청한 조건(media, dept, rank)에 부합하는 레코드 필터링
+        exact_matches = [
+            r for r in all_parsed_records
+            if (not media_clean or media_clean in r.get("media", ""))
+            and (not dept_clean or dept_clean in r.get("dept", ""))
+            and (not rank_clean or rank_clean in r.get("rank_title", "") or rank_clean in r.get("dept", ""))
+        ]
+
+        # 동일 부서 타 직급 매칭 (예: 더벨 건설부동산부 차장 전기룡)
+        dept_matches = []
+        if not exact_matches and media_clean and dept_clean:
+            dept_matches = [
+                r for r in all_parsed_records
+                if media_clean in r.get("media", "") and dept_clean in r.get("dept", "")
+            ]
+
+        # 동일 언론사 전체 매칭
+        media_matches = []
+        if not exact_matches and not dept_matches and media_clean:
+            media_matches = [
+                r for r in all_parsed_records
+                if media_clean in r.get("media", "")
+            ]
 
         is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
-        if all_records:
-            engine = PersonnelTrackerEngine()
-            res = engine.process_records(all_records, append=True)
-            msg_suffix = " (중단 전까지 수집된 내역 반영)" if is_stopped else ""
-            target_label = " ".join(filter(None, [media_clean, dept_clean, rank_clean]))
+        msg_suffix = " (중단 전까지 수집된 내역 반영)" if is_stopped else ""
+        target_label = " ".join(filter(None, [media_clean, dept_clean, rank_clean]))
+
+        if exact_matches:
             return {
-                "found_records": len(all_records),
+                "found_records": len(exact_matches),
                 "articles_searched": len(candidate_articles),
-                "unique_reporters": res["unique_reporters"],
-                "message": f"최근 40개년(1986~2026) 온라인 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{target_label}' 역대 발령 기록 {len(all_records)}건(언론인 {res['unique_reporters']}명)을 실시간 수집했습니다!{msg_suffix}"
+                "unique_reporters": engine_res["unique_reporters"],
+                "message": f"최근 40개년(1986~2026) 온라인 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{target_label}' 역대 발령 기록 {len(exact_matches)}건(언론인 {engine_res['unique_reporters']}명)을 실시간 수집했습니다!{msg_suffix}"
+            }
+        elif dept_matches:
+            sample_names = ", ".join([f"{r['name']}({r.get('rank_title', '')})" for r in dept_matches[:3]])
+            return {
+                "found_records": len(dept_matches),
+                "articles_searched": len(candidate_articles),
+                "unique_reporters": engine_res["unique_reporters"],
+                "message": f"'{media_clean} {dept_clean}' 부서에 '{rank_clean}' 직급 발령은 없으나, 동일 부서 타 직급 발령({len(dept_matches)}건: {sample_names})을 확인하여 DB에 반영했습니다!{msg_suffix}"
+            }
+        elif media_matches:
+            return {
+                "found_records": len(media_matches),
+                "articles_searched": len(candidate_articles),
+                "unique_reporters": engine_res["unique_reporters"],
+                "message": f"'{media_clean}'의 '{dept_clean} {rank_clean}' 조건 발령은 없으나, 해당 언론사의 역대 발령 기록 {len(media_matches)}건(언론인 {engine_res['unique_reporters']}명)을 실시간 수집하여 DB에 반영했습니다!{msg_suffix}"
             }
         else:
             if is_stopped:
@@ -2016,7 +2089,6 @@ class OnlineNewsTracker:
                     "articles_searched": len(candidate_articles),
                     "message": "사용자에 의해 실시간 탐색이 중단되었습니다."
                 }
-            target_label = " ".join(filter(None, [media_clean, dept_clean, rank_clean]))
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),

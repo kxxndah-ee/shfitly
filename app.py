@@ -862,6 +862,7 @@ with tab_search:
 
     selected_reporter_id = None
 
+    alt_search_note = ""
     if search_mode == "이름 검색":
         active_name = st.session_state.get("active_search_name", "")
         filtered_reporters = all_reporters
@@ -886,6 +887,32 @@ with tab_search:
                 r for r in db.search_records(media=m_val, dept=d_val, rank=r_val)
                 if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
             ]
+            # 직급(예: 부장) 조건으로 0건일 때, 동일 부서(예: 건설부동산부) 타 직급(차장 등) 발령 자동 감지 및 안내
+            if not matched_records and r_val and (m_val or d_val):
+                alt_records = [
+                    r for r in db.search_records(media=m_val, dept=d_val)
+                    if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+                ]
+                if alt_records:
+                    matched_records = alt_records
+                    filtered_reporters = [
+                        r for r in db.search_reporters(media=m_val, dept=d_val)
+                        if not is_media_organization(r["name"])
+                    ]
+                    dep_txt = f"{m_val} {d_val}".strip()
+                    alt_search_note = f"'{dep_txt}' 부서에 '{r_val}' 직급 발령 기록은 확인되지 않았으나, 동일 부서의 타 직급 발령({len(alt_records)}건)이 확인되어 안내합니다."
+                elif m_val and not d_val:
+                    alt_records = [
+                        r for r in db.search_records(media=m_val)
+                        if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+                    ]
+                    if alt_records:
+                        matched_records = alt_records
+                        filtered_reporters = [
+                            r for r in db.search_reporters(media=m_val)
+                            if not is_media_organization(r["name"])
+                        ]
+                        alt_search_note = f"'{m_val}'에 '{r_val}' 직급 발령 기록은 확인되지 않았으나, 해당 언론사의 발령 기록({len(alt_records)}건)이 확인되어 안내합니다."
         else:
             filtered_reporters = all_reporters
             matched_records = []
@@ -957,17 +984,20 @@ with tab_search:
         r_val = st.session_state.get("filter_rank_val", "")
 
         if search_mode == "매체 및 부서별 검색":
-            title_parts = []
-            if m_val:
-                title_parts.append(m_val)
-            if d_val:
-                title_parts.append(d_val)
-            if r_val:
-                title_parts.append(f"역대 {r_val}")
-            elif not r_val and (m_val or d_val):
-                title_parts.append("역대")
-            title_parts.append("발령 명단")
-            section_title = " ".join(title_parts)
+            if alt_search_note:
+                section_title = f"{m_val} {d_val} 발령 명단 (동일 부서 타 직급 포함)".strip()
+            else:
+                title_parts = []
+                if m_val:
+                    title_parts.append(m_val)
+                if d_val:
+                    title_parts.append(d_val)
+                if r_val:
+                    title_parts.append(f"역대 {r_val}")
+                elif not r_val and (m_val or d_val):
+                    title_parts.append("역대")
+                title_parts.append("발령 명단")
+                section_title = " ".join(title_parts)
             badge_title = f"최근 40개년(1986~2026) · 총 {len(unique_matched)}건"
         elif search_mode == "매체 및 이름 검색":
             mn_m = st.session_state.get("filter_mn_media_val", "")
@@ -978,6 +1008,9 @@ with tab_search:
         else:
             section_title = "인사 소식"
             badge_title = f"최근 40개년(1986~2026) 실시간 발령 명단 · 총 {len(unique_matched)}건"
+
+        if alt_search_note:
+            st.info(alt_search_note)
 
         render_html(f"""
         <div class="topic-section-divider"></div>
