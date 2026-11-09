@@ -1139,7 +1139,7 @@ class OnlineNewsTracker:
     """
     네이버/다음/구글 뉴스 온라인 기사를 실시간 수집 및 스크래핑하여,
     인사 발령 기사 및 기자 바이라인을 자동 분석하고 DB에 즉시 등록하는 온라인 트래커.
-    최근 30개년(1995~2026)의 포털 기사를 실시간 탐색하여 연대기 커리어 프로필을 구축합니다.
+    최근 40개년(1986~2026)의 포털 기사를 실시간 탐색하여 연대기 커리어 프로필을 구축합니다.
     """
 
     HEADERS = {
@@ -1229,7 +1229,7 @@ class OnlineNewsTracker:
         max_items: int = 25,
         client_id: str = "",
         client_secret: str = "",
-        start_year: int = 1995,
+        start_year: int = 1986,
         end_year: int = 2026,
         sort_first: str = "date"
     ) -> List[Dict[str, Any]]:
@@ -1640,7 +1640,7 @@ class OnlineNewsTracker:
         stop_event: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        특정 기자의 30개년(1995~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
+        특정 기자의 최근 40개년(1986~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
         소속 언론사, 직급/부서, 이메일, 연대기 타임라인을 파싱하고 DB에 등록합니다.
         최신 기사 정보를 놓치지 않도록 최근 연도(2024~2026) 구간은 최신순 정렬을 최우선으로 탐색합니다.
         """
@@ -1648,12 +1648,13 @@ class OnlineNewsTracker:
         if not name:
             return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
 
-        # 30개년(1995~2026) 연대기 분할 구간 설정:
+        # 최근 40개년(1986~2026) 연대기 분할 구간 설정:
         intervals = [
             (2024, 2026, "date"),
             (2020, 2023, "date"),
             (2010, 2019, "sim"),
-            (1995, 2009, "sim")
+            (1998, 2009, "sim"),
+            (1986, 1997, "sim")
         ]
 
         # 1단계: 병렬 검색 쿼리 작업 리스트 구성
@@ -1765,7 +1766,7 @@ class OnlineNewsTracker:
         if known_medias and not (stop_event and getattr(stop_event, "is_set", lambda: False)()):
             extra_tasks = []
             for km in list(known_medias):
-                extra_tasks.append((f'{km} "{name}" [인사]', 1995, 2026, "sim"))
+                extra_tasks.append((f'{km} "{name}" [인사]', 1986, 2026, "sim"))
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 extra_futures = [executor.submit(run_search_task, t) for t in extra_tasks]
@@ -1802,7 +1803,7 @@ class OnlineNewsTracker:
                 "found_records": len(all_records),
                 "articles_searched": len(candidate_articles),
                 "unique_reporters": res["unique_reporters"],
-                "message": f"30개년 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 초고속 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"최근 40개년(1986~2026) 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 초고속 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
             if is_stopped:
@@ -1810,7 +1811,7 @@ class OnlineNewsTracker:
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),
-                "message": f"'{name}' 기자의 30개년 온라인 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다. (동명이인 공공기관 제외 완료)"
+                "message": f"'{name}' 기자의 최근 40개년(1986~2026) 온라인 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다. (동명이인 공공기관 제외 완료)"
             }
 
     @classmethod
@@ -1824,111 +1825,202 @@ class OnlineNewsTracker:
         stop_event: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        특정 매체명 및 부서명의 30개년 온라인 [인사]/<인사> 기사를 실시간 검색하여
-        발령 레코드와 언론인 명단을 수집하고 DB에 등록합니다.
+        특정 매체명, 부서명, 직급명의 최근 40개년(1986~2026) 온라인 [인사]/<인사> 기사를 실시간 고속 검색하여
+        역대 발령 레코드와 언론인 명단을 전수 수집하고 DB에 등록합니다.
         """
-        media_clean = media.strip()
-        dept_clean = dept.strip()
-        rank_clean = rank.strip()
+        media_clean = media.strip() if media else ""
+        dept_clean = dept.strip() if dept else ""
+        rank_clean = rank.strip() if rank else ""
 
-        # 검색 쿼리 구성 ([인사] 및 <인사> 기사 대상)
-        query_parts = []
-        if media_clean:
-            query_parts.append(media_clean)
-        if dept_clean:
-            query_parts.append(dept_clean)
-        if rank_clean:
-            query_parts.append(rank_clean)
+        if not media_clean and not dept_clean and not rank_clean:
+            return {"found_records": 0, "articles_searched": 0, "message": "매체명, 부서명, 또는 직급명을 입력하세요."}
 
-        main_kw = " ".join(query_parts) if query_parts else "언론사"
-        queries = [
-            f'[인사] {main_kw}',
-            f'<인사> {main_kw}',
+        # 최근 40개년(1986~2026) 연대기 분할 구간 설정
+        intervals = [
+            (2024, 2026, "date"),
+            (2020, 2023, "date"),
+            (2010, 2019, "sim"),
+            (1998, 2009, "sim"),
+            (1986, 1997, "sim")
         ]
-        if media_clean:
-            queries.append(f'[인사] {media_clean}')
 
-        all_records = []
-        searched_urls = set()
-        article_count = 0
+        # 검색 쿼리 구성 (언론사 및 뉴스1/연합뉴스 타깃)
+        search_tasks = []
+        for sy, ey, sort_type in intervals:
+            q_list = []
+            if media_clean and rank_clean and dept_clean:
+                q_list.extend([
+                    f'{media_clean} "{dept_clean}" "{rank_clean}" [인사]',
+                    f'{media_clean} {dept_clean} [인사]',
+                    f'{media_clean} {rank_clean} [인사]',
+                    f'{media_clean} [인사] 뉴스1',
+                    f'{media_clean} [인사] 연합뉴스',
+                ])
+            elif media_clean and rank_clean:
+                q_list.extend([
+                    f'{media_clean} "{rank_clean}" [인사]',
+                    f'{media_clean} [인사] "{rank_clean}"',
+                    f'[인사] <{media_clean}> {rank_clean}',
+                    f'{media_clean} [인사] 뉴스1',
+                    f'{media_clean} [인사] 연합뉴스',
+                ])
+            elif media_clean and dept_clean:
+                q_list.extend([
+                    f'{media_clean} "{dept_clean}" [인사]',
+                    f'[인사] <{media_clean}> {dept_clean}',
+                    f'{media_clean} [인사] 뉴스1',
+                    f'{media_clean} [인사] 연합뉴스',
+                ])
+            elif media_clean:
+                q_list.extend([
+                    f'{media_clean} [인사] 뉴스1',
+                    f'{media_clean} [인사] 연합뉴스',
+                    f'[인사] <{media_clean}>',
+                    f'[인사] ◇ {media_clean}',
+                    f'[인사] {media_clean}',
+                ])
+            elif rank_clean and dept_clean:
+                q_list.extend([
+                    f'"{dept_clean}" "{rank_clean}" [인사] 뉴스1',
+                    f'"{dept_clean}" "{rank_clean}" [인사] 연합뉴스',
+                    f'{dept_clean} [인사] 뉴스1',
+                    f'{dept_clean} [인사] 연합뉴스',
+                    f'"{rank_clean}" [인사] 뉴스1',
+                    f'"{rank_clean}" [인사] 연합뉴스',
+                ])
+            elif rank_clean:
+                # 오직 직급(부장, 차장 등)만 검색한 경우 언론사 및 뉴스1/연합뉴스 타깃
+                q_list.extend([
+                    f'"{rank_clean}" [인사] 뉴스1',
+                    f'"{rank_clean}" [인사] 연합뉴스',
+                    f'[인사] <뉴스1> "{rank_clean}"',
+                    f'[인사] <연합뉴스> "{rank_clean}"',
+                    f'신문사 "{rank_clean}" [인사]',
+                    f'방송사 "{rank_clean}" [인사]',
+                    f'일보 "{rank_clean}" [인사]',
+                    f'경제 "{rank_clean}" [인사]',
+                ])
+            elif dept_clean:
+                q_list.extend([
+                    f'"{dept_clean}" [인사] 뉴스1',
+                    f'"{dept_clean}" [인사] 연합뉴스',
+                    f'신문사 "{dept_clean}" [인사]',
+                    f'방송사 "{dept_clean}" [인사]',
+                ])
 
-        for q in queries:
+            for q in q_list:
+                search_tasks.append((q, sy, ey, sort_type))
+
+        candidate_articles: Dict[str, Dict[str, Any]] = {}
+
+        def run_search_task(task):
             if stop_event and getattr(stop_event, "is_set", lambda: False)():
-                break
-            arts = cls.search_online_articles(
-                q, 
-                max_items=12, 
-                client_id=client_id, 
-                client_secret=client_secret, 
-                start_year=1995, 
-                end_year=2026,
-                sort_first="date"
+                return []
+            q, sy, ey, st = task
+            return cls.search_online_articles(
+                q, max_items=10, client_id=client_id, client_secret=client_secret,
+                start_year=sy, end_year=ey, sort_first=st
             )
-            for art in arts:
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(run_search_task, t) for t in search_tasks]
+            for f in concurrent.futures.as_completed(futures):
                 if stop_event and getattr(stop_event, "is_set", lambda: False)():
                     break
-                if not is_personnel_article_title(art.get("title", "")):
-                    continue
-                u = art["url"]
-                if u in searched_urls:
-                    continue
-                searched_urls.add(u)
-                article_count += 1
+                try:
+                    for art in f.result():
+                        u = art.get("url", "")
+                        if u and u not in candidate_articles:
+                            candidate_articles[u] = art
+                except Exception:
+                    pass
 
+        all_records = []
+
+        def fetch_worker(art):
+            if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                return None
+            u = art["url"]
+            try:
                 fetched = cls.fetch_full_text(u)
                 body = fetched.get("text", "")
                 if not body or len(body) < 30:
+                    return None
+                # 본문 내 직급/부서/매체 필터링
+                if rank_clean and rank_clean not in body and rank_clean not in art.get("title", ""):
+                    return None
+                if dept_clean and dept_clean not in body and dept_clean not in art.get("title", ""):
+                    return None
+                if media_clean and media_clean not in body and media_clean not in art.get("title", ""):
+                    return None
+                return art, fetched
+            except Exception:
+                return None
+
+        fetched_results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(fetch_worker, art) for art in candidate_articles.values()]
+            for f in concurrent.futures.as_completed(futures):
+                if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                    break
+                try:
+                    res = f.result()
+                    if res:
+                        fetched_results.append(res)
+                except Exception:
+                    pass
+
+        for art, fetched in fetched_results:
+            u = art["url"]
+            body = fetched["text"]
+            art_media = fetched.get("media") if fetched.get("media") != "온라인뉴스" else (media_clean or art.get("media"))
+            pub_date = fetched.get("pub_date") or art.get("date_text") or "2020-01-01"
+
+            recs = PersonnelRegexParser.parse_article_text(
+                article_text=body,
+                default_media=art_media,
+                article_title=art.get("title", ""),
+                pub_date=pub_date,
+                article_url=u
+            )
+            for r in recs:
+                if not is_media_organization(r.get("media", "")) or is_excluded_department(r.get("dept", "")):
                     continue
-
-                art_media = fetched.get("media") if fetched.get("media") != "온라인뉴스" else (media_clean or art.get("media"))
-                pub_date = fetched.get("pub_date") or art.get("date_text") or "2020-01-01"
-
-                recs = PersonnelRegexParser.parse_article_text(
-                    article_text=body,
-                    default_media=art_media,
-                    article_title=art["title"],
-                    pub_date=pub_date,
-                    article_url=u
-                )
-                for r in recs:
-                    if not is_media_organization(r.get("media", "")):
+                if media_clean and media_clean not in r.get("media", ""):
+                    if media_clean in art.get("title", ""):
+                        r["media"] = normalize_media_name(media_clean)
+                    else:
                         continue
-                    if media_clean and media_clean not in r.get("media", ""):
-                        if media_clean in art["title"]:
-                            r["media"] = normalize_media_name(media_clean)
-                        else:
-                            continue
-                    if dept_clean and dept_clean not in r.get("dept", ""):
-                        continue
-                    if rank_clean and rank_clean not in r.get("rank_title", ""):
-                        continue
-                    all_records.append(r)
-
-            if len(all_records) >= 20:
-                break
+                if dept_clean and dept_clean not in r.get("dept", ""):
+                    continue
+                if rank_clean and (rank_clean not in r.get("rank_title", "") and rank_clean not in r.get("dept", "")):
+                    continue
+                all_records.append(r)
 
         is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
         if all_records:
             engine = PersonnelTrackerEngine()
             res = engine.process_records(all_records, append=True)
             msg_suffix = " (중단 전까지 수집된 내역 반영)" if is_stopped else ""
+            target_label = " ".join(filter(None, [media_clean, dept_clean, rank_clean]))
             return {
                 "found_records": len(all_records),
-                "articles_searched": article_count,
+                "articles_searched": len(candidate_articles),
                 "unique_reporters": res["unique_reporters"],
-                "message": f"온라인 [인사]/<인사> 기사 {article_count}건에서 {len(all_records)}건의 발령 기록(언론인 {res['unique_reporters']}명)을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"최근 40개년(1986~2026) 온라인 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{target_label}' 역대 발령 기록 {len(all_records)}건(언론인 {res['unique_reporters']}명)을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
             if is_stopped:
                 return {
                     "found_records": 0,
-                    "articles_searched": article_count,
-                    "message": "검색이 중단되었습니다."
+                    "articles_searched": len(candidate_articles),
+                    "message": "사용자에 의해 실시간 탐색이 중단되었습니다."
                 }
+            target_label = " ".join(filter(None, [media_clean, dept_clean, rank_clean]))
             return {
                 "found_records": 0,
-                "articles_searched": article_count,
-                "message": f"온라인 인사 기사 {article_count}건을 탐색했으나 해당 조건의 발령 기록을 찾지 못했습니다."
+                "articles_searched": len(candidate_articles),
+                "message": f"최근 40개년(1986~2026) 온라인 인사 기사 {len(candidate_articles)}건을 탐색했으나 '{target_label}' 조건의 발령 기록을 찾지 못했습니다."
             }
 
     @classmethod
@@ -1954,12 +2046,13 @@ class OnlineNewsTracker:
         if not media_clean:
             return cls.track_reporter_online(reporter_name=name_clean, client_id=client_id, client_secret=client_secret, stop_event=stop_event)
 
-        # 30개년(1995~2026) 연대기 분할 구간 설정
+        # 최근 40개년(1986~2026) 연대기 분할 구간 설정
         intervals = [
             (2024, 2026, "date"),
             (2020, 2023, "date"),
             (2010, 2019, "sim"),
-            (1995, 2009, "sim")
+            (1998, 2009, "sim"),
+            (1986, 1997, "sim")
         ]
 
         search_tasks = []
@@ -2069,7 +2162,7 @@ class OnlineNewsTracker:
         if known_medias and not (stop_event and getattr(stop_event, "is_set", lambda: False)()):
             extra_tasks = []
             for km in list(known_medias):
-                extra_tasks.append((f'{km} "{name_clean}" [인사]', 1995, 2026, "sim"))
+                extra_tasks.append((f'{km} "{name_clean}" [인사]', 1986, 2026, "sim"))
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 extra_futures = [executor.submit(run_search_task, t) for t in extra_tasks]
@@ -2106,7 +2199,7 @@ class OnlineNewsTracker:
                 "found_records": len(all_records),
                 "articles_searched": len(candidate_articles),
                 "unique_reporters": res["unique_reporters"],
-                "message": f"30개년 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{media_clean} {name_clean}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"최근 40개년(1986~2026) 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{media_clean} {name_clean}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
             if is_stopped:
@@ -2114,7 +2207,7 @@ class OnlineNewsTracker:
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),
-                "message": f"'{media_clean}' '{name_clean}' 기자의 30개년 온라인 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다."
+                "message": f"'{media_clean}' '{name_clean}' 기자의 최근 40개년(1986~2026) 온라인 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다."
             }
 
     @classmethod
@@ -2634,14 +2727,14 @@ class MediaDatabase:
                 query += " AND (pr.dept LIKE ? OR r.current_dept LIKE ?)"
                 params.extend([f"%{dept}%", f"%{dept}%"])
             if rank:
-                query += " AND (pr.rank_title LIKE ? OR r.current_rank LIKE ?)"
-                params.extend([f"%{rank}%", f"%{rank}%"])
+                query += " AND (pr.rank_title LIKE ? OR pr.dept LIKE ? OR r.current_rank LIKE ?)"
+                params.extend([f"%{rank}%", f"%{rank}%", f"%{rank}%"])
 
             query += " ORDER BY r.last_seen DESC"
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
 
-    def search_records(self, name: str = "", media: str = "", dept: str = "", rank: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+    def search_records(self, name: str = "", media: str = "", dept: str = "", rank: str = "", limit: int = 2000) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             query = "SELECT * FROM personnel_records WHERE 1=1"
@@ -2656,8 +2749,8 @@ class MediaDatabase:
                 query += " AND dept LIKE ?"
                 params.append(f"%{dept}%")
             if rank:
-                query += " AND rank_title LIKE ?"
-                params.append(f"%{rank}%")
+                query += " AND (rank_title LIKE ? OR dept LIKE ?)"
+                params.extend([f"%{rank}%", f"%{rank}%"])
             query += " ORDER BY pub_date DESC, id DESC LIMIT ?"
             params.append(limit)
             cursor.execute(query, params)
@@ -2909,7 +3002,7 @@ def generate_career_profile_metrics(timeline: List[Dict[str, Any]], reporter_obj
         last_year = int(last_date_str[:4])
         career_years = max(1, last_year - first_year + 1)
     except Exception:
-        first_year = 1995
+        first_year = 1986
         last_year = 2026
         career_years = 1
 
@@ -3028,7 +3121,7 @@ def generate_career_excel(
         df_summary = pd.DataFrame(summary_data)
         df_summary.to_excel(writer, sheet_name="1_커리어_프로필_요약", index=False)
 
-        # Sheet 2: 30개년 발령 및 활동 연대기
+        # Sheet 2: 40개년 발령 및 활동 연대기
         timeline_rows = []
         for t in timeline:
             p_date = str(t.get("pub_date", ""))
@@ -3049,7 +3142,7 @@ def generate_career_excel(
         df_timeline = pd.DataFrame(timeline_rows)
         if not df_timeline.empty:
             df_timeline = df_timeline.sort_values(by="발령일자", ascending=True)
-        df_timeline.to_excel(writer, sheet_name="2_30개년_발령_연대기", index=False)
+        df_timeline.to_excel(writer, sheet_name="2_40개년_발령_연대기", index=False)
 
         # Sheet 3: 이직 히스토리
         if job_changes:

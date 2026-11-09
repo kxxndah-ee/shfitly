@@ -906,14 +906,13 @@ with tab_search:
             filtered_reporters = all_reporters
             matched_records = []
 
-    # 등록된 언론인 목록 / 인물 선택
+    # 등록된 언론인 목록 / 인물 선택 및 인사 발령 명단 표시
     if active_name:
         if search_mode == "매체 및 이름 검색" and st.session_state.get("filter_mn_media_val", ""):
             matched_reporters = [r for r in filtered_reporters if active_name in r["name"]]
         else:
             matched_reporters = [r for r in filtered_reporters if active_name in r["name"]] if filtered_reporters else [r for r in all_reporters if active_name in r["name"]]
         if matched_reporters:
-            # 최신 활동 및 발령일자(last_seen DESC) 순으로 정렬하여 가장 최근 소속 언론인이 기본 선택되도록 보장
             matched_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
             if len(matched_reporters) > 1:
                 options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
@@ -927,7 +926,7 @@ with tab_search:
                 st.caption(f"선택된 언론인: **{matched_reporters[0]['display_label']}**")
         else:
             st.info(f"온라인 인사 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
-    elif filtered_reporters:
+    elif filtered_reporters and search_mode != "매체 및 부서별 검색":
         filtered_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
         if len(filtered_reporters) > 1:
             options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
@@ -939,26 +938,57 @@ with tab_search:
         else:
             selected_reporter_id = filtered_reporters[0]["reporter_id"]
             st.caption(f"선택된 언론인: **{filtered_reporters[0]['display_label']}**")
-    elif search_mode == "매체 및 부서별 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val")):
-        st.info("조건에 부합하는 온라인 인사 발령 기록을 찾지 못했습니다.")
+    elif search_mode == "매체 및 부서별 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val") or st.session_state.get("filter_rank_val")):
+        if not matched_records:
+            target_kw = " ".join(filter(None, [st.session_state.get("filter_media_val"), st.session_state.get("filter_dept_val"), st.session_state.get("filter_rank_val")]))
+            st.info(f"조건에 부합하는 최근 40개년 온라인 인사 발령 기록을 찾지 못했습니다: '{target_kw}'")
     elif search_mode == "매체 및 이름 검색" and (st.session_state.get("filter_mn_media_val") or st.session_state.get("filter_mn_name_val")):
-        st.info("조건에 부합하는 온라인 인사 발령 기록을 찾지 못했습니다.")
+        if not matched_records:
+            st.info("조건에 부합하는 최근 40개년 온라인 인사 발령 기록을 찾지 못했습니다.")
 
-    # 인사 소식 (발령 명단) 테이블 표시 - 이름 검색 또는 매체/부서별 검색 결과 공통
+    # 발령 명단 테이블 표시 (역대 부장/차장 리스트업 및 실시간 발령 명단)
     if matched_records:
-        render_html("""
+        # 동일한 인사는 가장 빠른 기사 일자(Earliest Date) 기준으로 단일화 및 최신 발령일자순 정렬
+        unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
+        unique_matched = [r for r in unique_matched if not is_excluded_department(r.get("dept", ""))]
+
+        m_val = st.session_state.get("filter_media_val", "")
+        d_val = st.session_state.get("filter_dept_val", "")
+        r_val = st.session_state.get("filter_rank_val", "")
+
+        if search_mode == "매체 및 부서별 검색":
+            title_parts = []
+            if m_val:
+                title_parts.append(m_val)
+            if d_val:
+                title_parts.append(d_val)
+            if r_val:
+                title_parts.append(f"역대 {r_val}")
+            elif not r_val and (m_val or d_val):
+                title_parts.append("역대")
+            title_parts.append("발령 명단")
+            section_title = " ".join(title_parts)
+            badge_title = f"최근 40개년(1986~2026) · 총 {len(unique_matched)}건"
+        elif search_mode == "매체 및 이름 검색":
+            mn_m = st.session_state.get("filter_mn_media_val", "")
+            mn_n = st.session_state.get("filter_mn_name_val", "")
+            mn_label = " ".join(filter(None, [mn_m, mn_n]))
+            section_title = f"{mn_label} 발령 내역" if mn_label else "인사 소식"
+            badge_title = f"최근 40개년(1986~2026) · 총 {len(unique_matched)}건"
+        else:
+            section_title = "인사 소식"
+            badge_title = f"최근 40개년(1986~2026) 실시간 발령 명단 · 총 {len(unique_matched)}건"
+
+        render_html(f"""
         <div class="topic-section-divider"></div>
         <div class="topic-section-header">
             <div class="topic-title-wrapper">
                 <span class="topic-accent-bar" style="background-color: #2563EB;"></span>
-                <span class="topic-section-title">인사 소식</span>
-                <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">실시간 발령 명단</span>
+                <span class="topic-section-title">{section_title}</span>
+                <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">{badge_title}</span>
             </div>
         </div>
         """)
-        # 동일한 인사는 가장 빠른 기사 일자(Earliest Date) 기준으로 단일화 및 최신 발령일자순 정렬
-        unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
-        unique_matched = [r for r in unique_matched if not is_excluded_department(r.get("dept", ""))]
 
         df_display = pd.DataFrame([{
             "발령일자": r.get("pub_date", ""),
@@ -968,7 +998,7 @@ with tab_search:
             "직급": r.get("rank_title", ""),
             "성명": r.get("name", ""),
             "기사원문(링크주소)": r.get("article_url", "")
-        } for r in unique_matched[:50]])
+        } for r in unique_matched[:500]])
         st.dataframe(
             df_display,
             column_config={
@@ -990,6 +1020,19 @@ with tab_search:
             use_container_width=True, 
             hide_index=True
         )
+
+        # 매체 및 부서별 검색 시 역대 명단 바로 아래에서 인물 선택하여 상세 프로필 조회 가능
+        if search_mode == "매체 및 부서별 검색" and filtered_reporters:
+            filtered_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
+            kw_tag = r_val or d_val or m_val
+            select_label_prefix = f"인물 상세 프로필 조회 (역대 {kw_tag} 언론인 {len(filtered_reporters)}명 중 선택)" if kw_tag else f"인물 선택 : 검색된 언론인 {len(filtered_reporters)}명"
+            options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
+            selected_label = st.selectbox(
+                select_label_prefix,
+                options=list(options_dict.keys()),
+                key="sb_media_dept_reporters"
+            )
+            selected_reporter_id = options_dict[selected_label]
 
     # 선택된 기자의 상세 프로필 및 타임라인 렌더링
     if selected_reporter_id:
@@ -1050,7 +1093,7 @@ with tab_search:
                     <span class="badge badge-transfer">{current_media}</span>
                     <span class="badge badge-normal">{current_dept}</span>
                     <span class="badge badge-promotion">{current_rank}</span>
-                    <span class="badge badge-career">총 {metrics.get('career_years', 1)}년차 : {metrics.get('first_year', 1995)}년 ~ {metrics.get('last_year', 2026)}년</span>
+                    <span class="badge badge-career">총 {metrics.get('career_years', 1)}년차 : {metrics.get('first_year', 1986)}년 ~ {metrics.get('last_year', 2026)}년</span>
                     {'<span class="badge badge-jobchange">이직 ' + str(metrics.get('job_change_count', 0)) + '회</span>' if metrics.get('job_change_count', 0) > 0 else ''}
                 </div>
                 <div class="profile-meta">
@@ -1069,7 +1112,7 @@ with tab_search:
                 <div class="metric-card">
                     <div class="metric-label">총 경력 연차</div>
                     <div class="metric-value">{metrics.get('career_years', 1)}년차</div>
-                    <div class="metric-sub">{metrics.get('first_year', 1995)}년 ~ {metrics.get('last_year', 2026)}년</div>
+                    <div class="metric-sub">{metrics.get('first_year', 1986)}년 ~ {metrics.get('last_year', 2026)}년</div>
                 </div>
                 """)
             with kcol2:
