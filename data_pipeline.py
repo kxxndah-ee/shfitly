@@ -2885,3 +2885,9 @@ def generate_career_excel(
             df_jc.to_excel(writer, sheet_name="3_매체간_이직_기록", index=False)
 
     return output.getvalue()
+
+
+try:
+    from media_personnel_pipeline import PersonnelSearchEngine
+except ImportError:
+    PersonnelSearchEngine = None

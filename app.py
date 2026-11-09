@@ -417,6 +417,30 @@ st.markdown("""
     }
 
     /* ===================================================
+       검색 입력창 'Press Enter to submit form' 안내 문구 완전 제거
+       =================================================== */
+    div[data-testid="InputInstructions"],
+    div[data-testid="stInputInstructions"],
+    small[data-testid="stInputInstructions"],
+    div[data-testid="stTextInput"] div[data-testid="InputInstructions"],
+    div[data-testid="stTextInput"] small,
+    div[data-testid="stTextInput"] div:has(> span),
+    div[data-testid="stForm"] div[data-testid="InputInstructions"],
+    div[data-testid="stForm"] small,
+    .stTextInput small {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0px !important;
+        max-height: 0px !important;
+        margin: 0px !important;
+        padding: 0px !important;
+        opacity: 0 !important;
+        line-height: 0 !important;
+        font-size: 0 !important;
+        pointer-events: none !important;
+    }
+
+    /* ===================================================
        주제별 섹션 구분선 및 통일된 제목 폰트 스타일
        =================================================== */
     .topic-section-divider {

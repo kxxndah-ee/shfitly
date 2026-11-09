@@ -642,7 +642,147 @@ class PersonProfileBuilder:
 
 
 # =========================================================================
-# 7. 기사 수집 파이프라인 (Data Collection)
+# 7. 언론인 및 부서/직급 검색 엔진 (Personnel Search Engine)
+# =========================================================================
+
+class PersonnelSearchEngine:
+    def __init__(self, db_path: str = DB_NAME):
+        self.db_path = db_path
+
+    def _get_connection(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def search_by_org_position(
+        self,
+        company: str,
+        department: Optional[str] = None,
+        position: Optional[str] = None,
+        current_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        카테고리 1: 매체명 + 부서명 + 직급 검색
+        - current_only=True: 해당 언론사에서 현재 재직 중인 것으로 추정되는 인물만 조회
+        - current_only=False: 역대 해당 부서/직급을 거쳐간 모든 인사 기록 조회
+        """
+        conn = self._get_connection()
+        cur = conn.cursor()
+
+        company_clean = company.strip()
+        
+        if current_only:
+            # person_profiles 기준으로 현재 소속 상태 조회
+            query = """
+            SELECT 
+                p.person_id,
+                p.name,
+                p.current_company,
+                p.current_department,
+                p.current_position,
+                p.last_event_date,
+                p.needs_review,
+                (SELECT t.from_company 
+                 FROM turnover_histories t 
+                 WHERE t.person_id = p.person_id 
+                 ORDER BY t.turnover_date DESC LIMIT 1) AS prev_company
+            FROM person_profiles p
+            WHERE p.current_company LIKE ?
+            """
+            params = [f"%{company_clean}%"]
+
+            if department and department.strip():
+                query += " AND p.current_department LIKE ?"
+                params.append(f"%{department.strip()}%")
+
+            if position and position.strip():
+                query += " AND p.current_position LIKE ?"
+                params.append(f"%{position.strip()}%")
+
+            query += " ORDER BY p.last_event_date DESC, p.name ASC"
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+            results = []
+            for r in rows:
+                results.append({
+                    "person_id": r["person_id"],
+                    "name": r["name"],
+                    "company": r["current_company"],
+                    "department": r["current_department"] or "미분류",
+                    "position": r["current_position"] or "미분류",
+                    "last_date": r["last_event_date"],
+                    "prev_company": r["prev_company"] or "-",
+                    "needs_review": bool(r["needs_review"])
+                })
+        else:
+            # career_events 기준으로 과거 발령 이력 전수 조회
+            query = """
+            SELECT 
+                c.person_name AS name,
+                c.company_name AS company,
+                c.department_raw AS department,
+                c.position_raw AS position,
+                c.action_type,
+                c.event_date,
+                r.title AS article_title,
+                r.media_source
+            FROM career_events c
+            JOIN raw_articles r ON c.article_id = r.article_id
+            WHERE c.company_name LIKE ?
+            """
+            params = [f"%{company_clean}%"]
+
+            if department and department.strip():
+                query += " AND c.department_raw LIKE ?"
+                params.append(f"%{department.strip()}%")
+
+            if position and position.strip():
+                query += " AND c.position_raw LIKE ?"
+                params.append(f"%{position.strip()}%")
+
+            query += " ORDER BY c.event_date DESC, c.person_name ASC"
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+            results = []
+            for r in rows:
+                results.append({
+                    "name": r["name"],
+                    "company": r["company"],
+                    "department": r["department"] or "미분류",
+                    "position": r["position"] or "미분류",
+                    "action_type": r["action_type"] or "발령",
+                    "event_date": r["event_date"],
+                    "article_title": r["article_title"],
+                    "media_source": r["media_source"]
+                })
+
+        conn.close()
+        return results
+
+    def search_by_name(self, name: str) -> List[Dict[str, Any]]:
+        """인물 이름으로 프로필 및 최근 발령 상태 조회"""
+        conn = self._get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT 
+            p.*,
+            (SELECT t.from_company 
+             FROM turnover_histories t 
+             WHERE t.person_id = p.person_id 
+             ORDER BY t.turnover_date DESC LIMIT 1) AS prev_company
+        FROM person_profiles p
+        WHERE p.name LIKE ?
+        ORDER BY p.last_event_date DESC
+        """, (f"%{name.strip()}%",))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+
+
+# =========================================================================
+# 8. 기사 수집 파이프라인 (Data Collection)
 # =========================================================================
 
 class PersonnelCrawler:
@@ -791,6 +931,17 @@ class MediaPersonnelPipeline:
         self.db = DatabaseManager(db_path)
         self.crawler = PersonnelCrawler(self.db)
         self.builder = PersonProfileBuilder(self.db)
+        self.search_engine = PersonnelSearchEngine(db_path)
+
+    def search_by_org_position(
+        self,
+        company: str,
+        department: Optional[str] = None,
+        position: Optional[str] = None,
+        current_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        """매체명 + 부서명 + 직급 기반 인물 및 발령 이력 검색"""
+        return self.search_engine.search_by_org_position(company, department, position, current_only)
 
     def process_raw_articles(self) -> int:
         """수집된 raw_articles 중 미처리된 언론사 인사 기사를 파싱하여 career_events로 저장"""
@@ -912,6 +1063,16 @@ def run_self_verification_test():
     assert profile_json["career_timeline"][1]["event_type"] == "TURNOVER"
     assert profile_json["career_timeline"][1]["transition_from"] == "매일경제"
     assert profile_json["career_timeline"][1]["gap_days"] == 112
+
+    # 6. PersonnelSearchEngine 검색 기능 검증 (current_only=True & False)
+    cur_res = pipeline.search_by_org_position(company="한국경제", department="산업부", current_only=True)
+    assert len(cur_res) >= 1
+    assert cur_res[0]["name"] == "홍길동"
+    assert cur_res[0]["prev_company"] == "매일경제"
+
+    hist_res = pipeline.search_by_org_position(company="매일경제", department="경제부", current_only=False)
+    assert len(hist_res) >= 1
+    assert hist_res[0]["name"] == "홍길동"
 
     print("\n모든 단위 검증 및 명세 요구사항 테스트가 100% 통과했습니다.")
 
