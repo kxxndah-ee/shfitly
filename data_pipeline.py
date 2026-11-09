@@ -140,7 +140,17 @@ STOPWORDS = {
     "외", "등", "겸", "및", "간", "후보", "부국장",
     "카톡", "이메일", "제보", "문의", "게재", "연락처", "포함", "담당자", "저작권",
     "무단전재", "재배포", "신문사", "제보는", "산업국", "중앙신문", "경향신문", "한국정경",
-    "서울경제", "한겨레", "조선일보", "동아일보", "연합뉴스", "뉴스1", "뉴시스"
+    "서울경제", "한겨레", "조선일보", "동아일보", "연합뉴스", "뉴스1", "뉴시스",
+    "감사팀", "감사실", "법무실", "기획실", "비서실", "비서실장", "인사팀", "총무팀", "편집장", "지국장", "논설위원"
+}
+
+MEDIA_GROUP_ALIASES: Dict[str, List[str]] = {
+    "중앙일보": ["중앙그룹", "중앙홀딩스", "중앙미디어"],
+    "동아일보": ["동아미디어그룹"],
+    "매일경제": ["매경미디어그룹", "매경미디어"],
+    "한국경제": ["한경미디어그룹", "한경닷컴"],
+    "조선일보": ["조선미디어그룹"],
+    "헤럴드경제": ["헤럴드", "헤럴드미디어"],
 }
 
 
@@ -412,6 +422,8 @@ class PersonnelRegexParser:
         if not re.fullmatch(r"[가-힣]{2,4}", name):
             return None
         if name in STOPWORDS:
+            return None
+        if any(name.endswith(suffix) for suffix in ["팀", "실", "국", "부", "처", "센터", "단", "소", "파트"]):
             return None
         if name in cls.ACTION_CANDIDATES or name in ["임용", "보임", "임명", "승진", "전보", "전출", "전입", "파견", "선임", "채용", "영입", "이동", "전임", "보직", "선출", "위촉", "해임", "면직"]:
             return None
@@ -1272,6 +1284,8 @@ class OnlineNewsTracker:
                 return True
             if "news1.kr" in u or "yna.co.kr" in u:
                 return True
+            if not pr and ("v.daum.net/v/" in u or "n.news.naver.com" in u):
+                return True
             return False
 
         clean_q = query.replace('"', '').replace("'", "").strip()
@@ -1376,12 +1390,22 @@ class OnlineNewsTracker:
                 pass
 
         # 2. 다음 뉴스 검색 (뉴스1 및 연합뉴스 기사 엄격 필터링)
-        for wq in wire_queries:
+        daum_queries = list(wire_queries)
+        if target_keyword:
+            daum_queries = [
+                f'"{target_keyword}" "[인사]"',
+                f'"[인사] {target_keyword}"',
+                f'"[인사]{target_keyword}"',
+                f'"{target_keyword}" "[인사]" 뉴스1',
+                f'"{target_keyword}" "[인사]" 연합뉴스'
+            ] + daum_queries
+
+        for wq in daum_queries:
             if len(articles) >= max_items:
                 break
             try:
                 daum_sort = "recency" if sort_first == "date" else "accuracy"
-                daum_url = f"https://search.daum.net/search?w=news&q={quote(wq)}&sort={daum_sort}&period=u&sd={start_year}0101000000&ed={end_year}1231235959"
+                daum_url = f"https://search.daum.net/search?w=news&q={quote(wq)}&sort={daum_sort}"
                 resp = cls.get_session().get(daum_url, headers=cls.HEADERS, timeout=3.5, verify=False)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.content, "html.parser")
@@ -1406,11 +1430,13 @@ class OnlineNewsTracker:
                             articles.append({
                                 "title": title,
                                 "url": href,
-                                "media": "뉴스1" if ("뉴스1" in press_name or "news1.kr" in href) else "연합뉴스",
+                                "media": "뉴스1" if ("뉴스1" in press_name or "news1.kr" in href) else ("연합뉴스" if ("연합뉴스" in press_name or "yna.co.kr" in href) else "통신사"),
                                 "date_text": d_text
                             })
                             if len(articles) >= max_items:
                                 break
+            except Exception as e:
+                pass
             except Exception as e:
                 pass
 
@@ -1894,6 +1920,12 @@ class OnlineNewsTracker:
                     f'{media_clean} [인사] 뉴스1',
                     f'{media_clean} [인사] 연합뉴스',
                 ])
+                if media_clean in MEDIA_GROUP_ALIASES:
+                    for g_alias in MEDIA_GROUP_ALIASES[media_clean]:
+                        q_list.extend([
+                            f'"{g_alias}" [인사]',
+                            f'[인사] {g_alias}',
+                        ])
             elif media_clean and dept_clean:
                 q_list.extend([
                     f'{media_clean} "{dept_clean}" [인사]',
@@ -1904,6 +1936,12 @@ class OnlineNewsTracker:
                     f'{media_clean} [인사] 뉴스1',
                     f'{media_clean} [인사] 연합뉴스',
                 ])
+                if media_clean in MEDIA_GROUP_ALIASES:
+                    for g_alias in MEDIA_GROUP_ALIASES[media_clean]:
+                        q_list.extend([
+                            f'"{g_alias}" [인사]',
+                            f'[인사] {g_alias}',
+                        ])
             elif media_clean:
                 q_list.extend([
                     f'{media_clean} [인사]',
@@ -1913,6 +1951,15 @@ class OnlineNewsTracker:
                     f'{media_clean} [인사] 뉴스1',
                     f'{media_clean} [인사] 연합뉴스',
                 ])
+                if media_clean in MEDIA_GROUP_ALIASES:
+                    for g_alias in MEDIA_GROUP_ALIASES[media_clean]:
+                        q_list.extend([
+                            f'"{g_alias}" [인사]',
+                            f'[인사] {g_alias}',
+                            f'[인사] "{g_alias}"',
+                            f'"{g_alias}" [인사] 뉴스1',
+                            f'"{g_alias}" [인사] 연합뉴스',
+                        ])
             elif rank_clean and dept_clean:
                 q_list.extend([
                     f'"{dept_clean}" "{rank_clean}" [인사] 뉴스1',
@@ -1979,7 +2026,10 @@ class OnlineNewsTracker:
                 if not body or len(body) < 30:
                     return None
                 # 본문 내 직급/부서/매체 필터링: 매체명이 있는 경우 매체명 존재 여부 확인
-                if media_clean and media_clean not in body and media_clean not in art.get("title", ""):
+                allowed_media_tokens = [media_clean]
+                if media_clean in MEDIA_GROUP_ALIASES:
+                    allowed_media_tokens.extend(MEDIA_GROUP_ALIASES[media_clean])
+                if media_clean and not any(tok in body or tok in art.get("title", "") for tok in allowed_media_tokens):
                     return None
                 if not media_clean and dept_clean and dept_clean not in body and dept_clean not in art.get("title", ""):
                     return None
@@ -2019,12 +2069,21 @@ class OnlineNewsTracker:
             for r in recs:
                 if not is_media_organization(r.get("media", "")) or is_excluded_department(r.get("dept", "")):
                     continue
-                if media_clean and media_clean not in r.get("media", ""):
-                    if media_clean in art.get("title", ""):
-                        r["media"] = normalize_media_name(media_clean)
-                    else:
-                        continue
-                all_parsed_records.append(r)
+                rec_med = r.get("media", "")
+                is_target_media = False
+                if not media_clean:
+                    is_target_media = True
+                elif media_clean in rec_med or rec_med in media_clean:
+                    is_target_media = True
+                elif media_clean in MEDIA_GROUP_ALIASES and any(alias in rec_med for alias in MEDIA_GROUP_ALIASES[media_clean]):
+                    is_target_media = True
+                    r["media"] = normalize_media_name(media_clean)
+                elif rec_med in ["온라인뉴스", "미상", ""] and media_clean in art.get("title", "") and not any(kw in art.get("title", "") for kw in ["종합", "외", "등", "동향"]):
+                    is_target_media = True
+                    r["media"] = normalize_media_name(media_clean)
+
+                if is_target_media:
+                    all_parsed_records.append(r)
 
         # 1. 수집된 모든 유효 언론인 발령 레코드를 DB에 전수 등록 (지식 베이스 누적)
         engine_res = {"unique_reporters": 0}
