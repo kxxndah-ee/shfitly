@@ -32,6 +32,7 @@ from data_pipeline import (
     generate_career_excel,
     is_personnel_article_title,
     is_media_organization,
+    is_excluded_department,
     DOMAIN_TAXONOMY,
     RANK_HIERARCHY
 )
@@ -585,7 +586,10 @@ with tab_search:
                 st.session_state["upload_banner"] = res["message"]
                 st.rerun()
 
-    all_reporters = [r for r in db.get_all_reporters() if not is_media_organization(r["name"])]
+    all_reporters = [
+        r for r in db.get_all_reporters() 
+        if not is_media_organization(r["name"]) and not is_excluded_department(r.get("current_dept", ""))
+    ]
 
     # 1. 이름 검색 (폰트 및 사이즈는 매체 및 부서별 검색과 동일)
     if search_mode == "이름 검색":
@@ -824,6 +828,7 @@ with tab_search:
         """)
         # 동일한 인사는 가장 빠른 기사 일자(Earliest Date) 기준으로 단일화 및 최신 발령일자순 정렬
         unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
+        unique_matched = [r for r in unique_matched if not is_excluded_department(r.get("dept", ""))]
 
         df_display = pd.DataFrame([{
             "발령일자": r.get("pub_date", ""),
@@ -1357,6 +1362,7 @@ with tab_monitoring:
         """)
         
         unique_raw_recs = MediaDatabase.deduplicate_timeline_records(all_raw_recs, window_days=30, sort_desc=True)
+        unique_raw_recs = [r for r in unique_raw_recs if not is_excluded_department(r.get("dept", ""))]
         table_rows = []
         for r in unique_raw_recs:
             table_rows.append({

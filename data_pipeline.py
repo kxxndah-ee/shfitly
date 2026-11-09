@@ -330,6 +330,25 @@ def is_personnel_article_title(title: str, text: str = "") -> bool:
     return True
 
 
+EXCLUDED_DEPARTMENT_KEYWORDS = [
+    "예능",         # 예능국, 예능센터, 예능본부, 예능제작, 예능기획 등 (방송 예능 제작/CP)
+    "드라마",       # 드라마국, 드라마본부, 드라마센터, 드라마제작 등
+    "라디오제작",   # 라디오 프로그램 제작 (보도국 라디오뉴스 제외)
+    "공연사업",     # 문화공연 및 페스티벌 사업
+    "쇼버라이어티", # 쇼/오락 프로그램 제작
+]
+
+
+def is_excluded_department(dept_name: str) -> bool:
+    """
+    기자/언론인 고유 업무와 무관한 방송사 예능, 드라마 등 비보도 프로그램 제작 부서를 식별하여 제외합니다.
+    """
+    if not dept_name:
+        return False
+    d = str(dept_name).replace(" ", "")
+    return any(kw in d for kw in EXCLUDED_DEPARTMENT_KEYWORDS)
+
+
 # ==========================================
 # 2. 한국 언론사 인사 기사 전용 정규표현식 파서
 # ==========================================
@@ -687,6 +706,10 @@ class PersonnelRegexParser:
                 if not clean_rank:
                     clean_rank = "기자"
 
+                # 예능, 드라마 등 비보도 방송 제작 부서 제외
+                if is_excluded_department(clean_dept):
+                    continue
+
                 rank_level = parse_rank_level(clean_rank)
                 domain = classify_domain(clean_dept)
 
@@ -730,6 +753,8 @@ class PersonnelTrackerEngine:
             combined_records = []
             
             for r in existing_records:
+                if is_excluded_department(r.get("dept", "")):
+                    continue
                 key = (str(r.get("pub_date", "")), str(r.get("media", "")), str(r.get("name", "")), str(r.get("dept", "")), str(r.get("rank_title", "")))
                 if key not in seen_keys:
                     seen_keys.add(key)
@@ -737,6 +762,8 @@ class PersonnelTrackerEngine:
 
             new_added_count = 0
             for r in raw_records:
+                if is_excluded_department(r.get("dept", "")):
+                    continue
                 key = (str(r.get("pub_date", "")), str(r.get("media", "")), str(r.get("name", "")), str(r.get("dept", "")), str(r.get("rank_title", "")))
                 if key not in seen_keys:
                     seen_keys.add(key)
@@ -745,13 +772,15 @@ class PersonnelTrackerEngine:
             
             effective_records = combined_records
         else:
-            effective_records = list(raw_records)
-            new_added_count = len(raw_records)
+            effective_records = [r for r in raw_records if not is_excluded_department(r.get("dept", ""))]
+            new_added_count = len(effective_records)
 
-        # 언론사 인사소식만 엄격 필터링
+        # 언론사 인사소식만 엄격 필터링 (예능 등 비보도 부서 배제)
         effective_records = [
             r for r in effective_records 
-            if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+            if is_media_organization(r.get("media", "")) 
+            and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+            and not is_excluded_department(r.get("dept", ""))
         ]
 
         if not effective_records:
@@ -1722,7 +1751,7 @@ class OnlineNewsTracker:
             )
             matched_recs = [
                 r for r in recs 
-                if r["name"] == name and is_media_organization(r.get("media", ""))
+                if r["name"] == name and is_media_organization(r.get("media", "")) and not is_excluded_department(r.get("dept", ""))
             ]
             if matched_recs:
                 for mr in matched_recs:
@@ -1761,7 +1790,7 @@ class OnlineNewsTracker:
                                 article_url=fetched.get("origin_url") or art["url"]
                             )
                             for r in recs:
-                                if r["name"] == name and is_media_organization(r.get("media", "")):
+                                if r["name"] == name and is_media_organization(r.get("media", "")) and not is_excluded_department(r.get("dept", "")):
                                     all_records.append(r)
 
         is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
@@ -2184,6 +2213,24 @@ class MediaDatabase:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_reporters_name ON reporters(name)")
 
             conn.commit()
+
+        self.purge_excluded_department_records()
+
+    def purge_excluded_department_records(self) -> int:
+        """기존 DB에서 '예능', '드라마' 등 제외 대상 부서 레코드를 영구 삭제합니다."""
+        deleted_count = 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            for kw in EXCLUDED_DEPARTMENT_KEYWORDS:
+                cursor.execute("SELECT id FROM personnel_records WHERE dept LIKE ?", (f"%{kw}%",))
+                ids = [r[0] for r in cursor.fetchall()]
+                if ids:
+                    deleted_count += len(ids)
+                    cursor.execute("DELETE FROM personnel_records WHERE dept LIKE ?", (f"%{kw}%",))
+                cursor.execute("DELETE FROM reporters WHERE current_dept LIKE ?", (f"%{kw}%",))
+                cursor.execute("DELETE FROM job_changes WHERE from_dept LIKE ? OR to_dept LIKE ?", (f"%{kw}%", f"%{kw}%"))
+            conn.commit()
+        return deleted_count
 
     def clear_all_data(self):
         """데이터베이스의 모든 인사 발령 및 기자 데이터를 완전히 삭제합니다."""

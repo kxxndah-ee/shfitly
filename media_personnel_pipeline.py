@@ -70,6 +70,24 @@ NON_MEDIA_EXCLUSIONS = [
     "병원", "대학", "연구원", "협회", "연맹", "학회", "포스코", "현대", "삼성", "LG", "SK"
 ]
 
+# 비보도/예능/드라마 등 제외 대상 부서 키워드 (기자 고유 업무 무관 부서 필터링)
+EXCLUDED_DEPARTMENT_KEYWORDS = [
+    "예능",         # 예능국, 예능센터, 예능본부, 예능제작, 예능기획 등 (방송 예능 제작/CP)
+    "드라마",       # 드라마국, 드라마본부, 드라마센터, 드라마제작 등
+    "라디오제작",   # 라디오 프로그램 제작 (보도국 라디오뉴스 제외)
+    "공연사업",     # 문화공연 및 페스티벌 사업
+    "쇼버라이어티", # 쇼/오락 프로그램 제작
+]
+
+
+def is_excluded_department(dept_name: str) -> bool:
+    """기자/언론인 고유 업무와 무관한 방송사 예능, 드라마 등 비보도 프로그램 제작 부서를 식별하여 제외합니다."""
+    if not dept_name:
+        return False
+    d = str(dept_name).replace(" ", "")
+    return any(kw in d for kw in EXCLUDED_DEPARTMENT_KEYWORDS)
+
+
 # 직급별 서열 점수 (Rank Score) 매핑
 RANK_SCORE_MAP = {
     "수습기자": 1, "인턴": 1,
@@ -350,6 +368,10 @@ class PersonnelTextParser:
                     full_dept = f"{current_dept_prefix} {dept_raw}".strip()
                 else:
                     full_dept = dept_raw or "본사"
+
+                # 예능, 드라마 등 비보도 방송 제작 부서 제외
+                if is_excluded_department(full_dept):
+                    continue
 
                 dept_cat = cls.categorize_department(full_dept)
                 rank_score = cls.calculate_rank_score(position_raw)
