@@ -632,7 +632,6 @@ with tab_search:
                     st.text_input(
                         "기자 이름",
                         value=st.session_state.get("active_search_name", ""),
-                        placeholder="기자 이름 입력",
                         label_visibility="collapsed",
                         disabled=True,
                         key="search_name_dis"
@@ -653,7 +652,6 @@ with tab_search:
                         search_name_input = st.text_input(
                             "기자 이름",
                             value=st.session_state.get("active_search_name", ""),
-                            placeholder="기자 이름 입력",
                             label_visibility="collapsed"
                         )
                     with col_btn:
@@ -808,15 +806,13 @@ with tab_search:
                         mn_media_input = st.text_input(
                             "매체명", 
                             value=st.session_state.get("filter_mn_media_val", ""), 
-                            key="mn_media", 
-                            placeholder="예: 조선일보, 아시아투데이"
+                            key="mn_media"
                         )
                     with mn_col2:
                         mn_name_input = st.text_input(
                             "기자 이름", 
                             value=st.session_state.get("filter_mn_name_val", ""), 
-                            key="mn_name", 
-                            placeholder="예: 박지영, 홍길동"
+                            key="mn_name"
                         )
                     with mn_btn:
                         mn_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
