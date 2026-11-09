@@ -1932,6 +1932,192 @@ class OnlineNewsTracker:
             }
 
     @classmethod
+    def track_media_name_online(
+        cls,
+        media: str = "",
+        name: str = "",
+        client_id: str = "",
+        client_secret: str = "",
+        stop_event: Optional[Any] = None
+    ) -> Dict[str, Any]:
+        """
+        특정 매체명 및 인물명의 30개년 온라인 [인사]/<인사> 기사를 실시간 검색하여
+        발령 레코드와 언론인 명단을 수집하고 DB에 등록합니다.
+        """
+        media_clean = media.strip() if media else ""
+        name_clean = name.strip() if name else ""
+
+        if not media_clean and not name_clean:
+            return {"found_records": 0, "articles_searched": 0, "message": "매체명 또는 기자 이름을 입력하세요."}
+        if not name_clean:
+            return cls.track_media_dept_online(media=media_clean, client_id=client_id, client_secret=client_secret, stop_event=stop_event)
+        if not media_clean:
+            return cls.track_reporter_online(reporter_name=name_clean, client_id=client_id, client_secret=client_secret, stop_event=stop_event)
+
+        # 30개년(1995~2026) 연대기 분할 구간 설정
+        intervals = [
+            (2024, 2026, "date"),
+            (2020, 2023, "date"),
+            (2010, 2019, "sim"),
+            (1995, 2009, "sim")
+        ]
+
+        search_tasks = []
+        for sy, ey, sort_type in intervals:
+            q_list = [
+                f'{media_clean} {name_clean} [인사]',
+                f'"{media_clean}" "{name_clean}" [인사]',
+                f'{media_clean} [인사] "{name_clean}"',
+                f'{name_clean} [인사] {media_clean}',
+                f'{media_clean} {name_clean} [인사] 뉴스1',
+                f'{media_clean} {name_clean} [인사] 연합뉴스',
+                f'[인사] <{media_clean}> {name_clean}',
+                f'[인사] ◇ {media_clean} {name_clean}',
+                f'{name_clean} [인사] 뉴스1',
+                f'{name_clean} [인사] 연합뉴스',
+            ]
+            if ey >= 2020:
+                q_list.extend([
+                    f'{media_clean} {name_clean} "부장" [인사]',
+                    f'{media_clean} {name_clean} "차장" [인사]',
+                    f'{media_clean} {name_clean} "팀장" [인사]',
+                    f'{media_clean} {name_clean} "기자" [인사]',
+                    f'{media_clean} {name_clean} "국장" [인사]',
+                ])
+            for q in q_list:
+                search_tasks.append((q, sy, ey, sort_type))
+
+        candidate_articles: Dict[str, Dict[str, Any]] = {}
+
+        def run_search_task(task):
+            if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                return []
+            q, sy, ey, st = task
+            return cls.search_online_articles(
+                q, max_items=8, client_id=client_id, client_secret=client_secret,
+                start_year=sy, end_year=ey, sort_first=st
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(run_search_task, t) for t in search_tasks]
+            for f in concurrent.futures.as_completed(futures):
+                if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                    break
+                try:
+                    for art in f.result():
+                        u = art.get("url", "")
+                        if u and u not in candidate_articles:
+                            candidate_articles[u] = art
+                except Exception:
+                    pass
+
+        all_records = []
+        known_medias = set()
+
+        def fetch_worker(art):
+            if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                return None
+            u = art["url"]
+            try:
+                fetched = cls.fetch_full_text(u)
+                body = fetched.get("text", "")
+                if not body or len(body) < 30 or name_clean not in body:
+                    return None
+                return art, fetched
+            except Exception:
+                return None
+
+        fetched_results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(fetch_worker, art) for art in candidate_articles.values()]
+            for f in concurrent.futures.as_completed(futures):
+                if stop_event and getattr(stop_event, "is_set", lambda: False)():
+                    break
+                try:
+                    res = f.result()
+                    if res:
+                        fetched_results.append(res)
+                except Exception:
+                    pass
+
+        for art, fetched in fetched_results:
+            u = art["url"]
+            body = fetched["text"]
+            media_src = fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"]
+            article_pub_date = fetched.get("pub_date") or art.get("date_text") or "2024-01-01"
+            final_u = fetched.get("origin_url") or u
+
+            recs = PersonnelRegexParser.parse_article_text(
+                article_text=body,
+                default_media=media_src,
+                article_title=art.get("title", ""),
+                pub_date=article_pub_date,
+                article_url=final_u
+            )
+            matched_recs = [
+                r for r in recs 
+                if r["name"] == name_clean and is_media_organization(r.get("media", "")) and not is_excluded_department(r.get("dept", ""))
+            ]
+            if matched_recs:
+                for mr in matched_recs:
+                    if fetched.get("email") and not mr.get("email"):
+                        mr["email"] = fetched["email"]
+                    if is_media_organization(mr.get("media", "")):
+                        known_medias.add(mr["media"])
+                all_records.extend(matched_recs)
+
+        if known_medias and not (stop_event and getattr(stop_event, "is_set", lambda: False)()):
+            extra_tasks = []
+            for km in list(known_medias):
+                extra_tasks.append((f'{km} "{name_clean}" [인사]', 1995, 2026, "sim"))
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                extra_futures = [executor.submit(run_search_task, t) for t in extra_tasks]
+                extra_arts = []
+                for f in concurrent.futures.as_completed(extra_futures):
+                    for a in f.result():
+                        if a["url"] not in candidate_articles:
+                            candidate_articles[a["url"]] = a
+                            extra_arts.append(a)
+                
+                if extra_arts:
+                    extra_fetch_futures = [executor.submit(fetch_worker, a) for a in extra_arts]
+                    for f in concurrent.futures.as_completed(extra_fetch_futures):
+                        res = f.result()
+                        if res:
+                            art, fetched = res
+                            recs = PersonnelRegexParser.parse_article_text(
+                                article_text=fetched["text"],
+                                default_media=fetched["media"] if fetched["media"] != "온라인뉴스" else art["media"],
+                                article_title=art.get("title", ""),
+                                pub_date=fetched.get("pub_date") or art.get("date_text") or "2020-01-01",
+                                article_url=fetched.get("origin_url") or art["url"]
+                            )
+                            for r in recs:
+                                if r["name"] == name_clean and is_media_organization(r.get("media", "")) and not is_excluded_department(r.get("dept", "")):
+                                    all_records.append(r)
+
+        is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
+        if all_records:
+            engine = PersonnelTrackerEngine()
+            res = engine.process_records(all_records, append=True)
+            msg_suffix = " (중단 전까지 수집된 내역 반영)" if is_stopped else ""
+            return {
+                "found_records": len(all_records),
+                "articles_searched": len(candidate_articles),
+                "unique_reporters": res["unique_reporters"],
+                "message": f"30개년 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{media_clean} {name_clean}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
+            }
+        else:
+            if is_stopped:
+                return {"found_records": 0, "articles_searched": len(candidate_articles), "message": "사용자에 의해 실시간 탐색이 중단되었습니다."}
+            return {
+                "found_records": 0,
+                "articles_searched": len(candidate_articles),
+                "message": f"'{media_clean}' '{name_clean}' 기자의 30개년 온라인 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다."
+            }
+
+    @classmethod
     def fetch_latest_online_personnel(
         cls, 
         max_articles: int = 15,

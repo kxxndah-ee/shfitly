@@ -589,15 +589,19 @@ tab_search, tab_monitoring = st.tabs([
 # TAB 1: 검색
 # =========================================================================
 with tab_search:
-    # 3. 검색 모드 선택 (이름 검색 vs 매체 및 부서별 검색)
-    col_mode, col_quick_btn = st.columns([3, 1], vertical_alignment="bottom")
+    # 3. 검색 모드 선택 (이름 검색 vs 매체 및 부서별 검색 vs 매체 및 이름 검색)
+    search_options = ["이름 검색", "매체 및 부서별 검색", "매체 및 이름 검색"]
+    current_mode = st.session_state.get("search_mode_selection", "이름 검색")
+    default_mode_idx = search_options.index(current_mode) if current_mode in search_options else 0
+
+    col_mode, col_quick_btn = st.columns([3.5, 1], vertical_alignment="bottom")
     with col_mode:
         search_mode = st.radio(
             "검색 모드 선택",
-            options=["이름 검색", "매체 및 부서별 검색"],
+            options=search_options,
             horizontal=True,
             label_visibility="collapsed",
-            index=0 if st.session_state.get("search_mode_selection", "이름 검색") == "이름 검색" else 1,
+            index=default_mode_idx,
             key="search_mode_radio"
         )
         st.session_state["search_mode_selection"] = search_mode
@@ -696,7 +700,7 @@ with tab_search:
                     st.rerun()
 
     # 2. 매체 및 부서별 검색 (검색 버튼 포함, 50% 길이 축소)
-    else:
+    elif search_mode == "매체 및 부서별 검색":
         st.markdown("##### 매체 및 부서별 검색")
         col_form_half, col_empty_half = st.columns([1, 1])
         is_searching_media = st.session_state.get("is_searching_media", False)
@@ -775,6 +779,91 @@ with tab_search:
                     st.session_state["upload_banner"] = res.get("message", "검색이 완료되었습니다.")
                     st.rerun()
 
+    # 3. 매체 및 이름 검색 (매체명 + 기자 이름)
+    elif search_mode == "매체 및 이름 검색":
+        st.markdown("##### 매체 및 이름 검색")
+        col_form_half, col_empty_half = st.columns([1, 1])
+        is_searching_mn = st.session_state.get("is_searching_media_name", False)
+
+        with col_form_half:
+            if is_searching_mn:
+                mn_col1, mn_col2, mn_btn, mn_stop = st.columns([3, 3, 1.2, 1.2], vertical_alignment="bottom")
+                with mn_col1:
+                    st.text_input("매체명", value=st.session_state.get("filter_mn_media_val", ""), key="mn_media_dis", disabled=True)
+                with mn_col2:
+                    st.text_input("기자 이름", value=st.session_state.get("filter_mn_name_val", ""), key="mn_name_dis", disabled=True)
+                with mn_btn:
+                    st.button("검색", type="primary", disabled=True, use_container_width=True, key="btn_mn_dis")
+                with mn_stop:
+                    if st.button("검색 중단", type="secondary", use_container_width=True, key="btn_stop_mn"):
+                        st.session_state["is_searching_media_name"] = False
+                        if "stop_event_mn" in st.session_state:
+                            st.session_state["stop_event_mn"].set()
+                        st.session_state["upload_banner"] = "검색이 중단되었습니다."
+                        st.rerun()
+            else:
+                with st.form(key="media_name_search_form", clear_on_submit=False):
+                    mn_col1, mn_col2, mn_btn = st.columns([3, 3, 1.2], vertical_alignment="bottom")
+                    with mn_col1:
+                        mn_media_input = st.text_input(
+                            "매체명", 
+                            value=st.session_state.get("filter_mn_media_val", ""), 
+                            key="mn_media", 
+                            placeholder="예: 조선일보, 아시아투데이"
+                        )
+                    with mn_col2:
+                        mn_name_input = st.text_input(
+                            "기자 이름", 
+                            value=st.session_state.get("filter_mn_name_val", ""), 
+                            key="mn_name", 
+                            placeholder="예: 박지영, 홍길동"
+                        )
+                    with mn_btn:
+                        mn_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
+
+                if mn_submitted:
+                    m_clean = mn_media_input.strip()
+                    n_clean = mn_name_input.strip()
+                    st.session_state["filter_mn_media_val"] = m_clean
+                    st.session_state["filter_mn_name_val"] = n_clean
+
+                    if m_clean or n_clean:
+                        # 무조건 실시간 온라인 검색을 디폴트로 실행
+                        st.session_state["is_searching_media_name"] = True
+                        st.rerun()
+                    else:
+                        st.warning("매체명 또는 기자 이름을 입력해주세요.")
+
+        if is_searching_mn:
+            stop_event_mn = threading.Event()
+            st.session_state["stop_event_mn"] = stop_event_mn
+            m_val = st.session_state.get("filter_mn_media_val", "")
+            n_val = st.session_state.get("filter_mn_name_val", "")
+            with st.spinner("실시간 검색 중..."):
+                nid = get_secret("naver_client_id", "")
+                nsec = get_secret("naver_client_secret", "")
+                res_box_mn = {}
+
+                def mn_worker():
+                    try:
+                        res_box_mn["res"] = OnlineNewsTracker.track_media_name_online(
+                            media=m_val, name=n_val, client_id=nid, client_secret=nsec, stop_event=stop_event_mn
+                        )
+                    except Exception as e:
+                        res_box_mn["error"] = str(e)
+
+                tmn = threading.Thread(target=mn_worker)
+                tmn.start()
+
+                while tmn.is_alive():
+                    time.sleep(0.1)
+
+                st.session_state["is_searching_media_name"] = False
+                if not stop_event_mn.is_set():
+                    res = res_box_mn.get("res", {})
+                    st.session_state["upload_banner"] = res.get("message", "검색이 완료되었습니다.")
+                    st.rerun()
+
     selected_reporter_id = None
 
     if search_mode == "이름 검색":
@@ -787,7 +876,7 @@ with tab_search:
             ]
         else:
             matched_records = []
-    else:
+    elif search_mode == "매체 및 부서별 검색":
         active_name = ""
         m_val = st.session_state.get("filter_media_val", "")
         d_val = st.session_state.get("filter_dept_val", "")
@@ -804,10 +893,29 @@ with tab_search:
         else:
             filtered_reporters = all_reporters
             matched_records = []
+    elif search_mode == "매체 및 이름 검색":
+        m_val = st.session_state.get("filter_mn_media_val", "")
+        n_val = st.session_state.get("filter_mn_name_val", "")
+        active_name = n_val
+        if m_val or n_val:
+            filtered_reporters = [
+                r for r in db.search_reporters(media=m_val, name=n_val)
+                if not is_media_organization(r["name"])
+            ]
+            matched_records = [
+                r for r in db.search_records(media=m_val, name=n_val)
+                if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+            ]
+        else:
+            filtered_reporters = all_reporters
+            matched_records = []
 
     # 등록된 언론인 목록 / 인물 선택
     if active_name:
-        matched_reporters = [r for r in filtered_reporters if active_name in r["name"]] if filtered_reporters else [r for r in all_reporters if active_name in r["name"]]
+        if search_mode == "매체 및 이름 검색" and st.session_state.get("filter_mn_media_val", ""):
+            matched_reporters = [r for r in filtered_reporters if active_name in r["name"]]
+        else:
+            matched_reporters = [r for r in filtered_reporters if active_name in r["name"]] if filtered_reporters else [r for r in all_reporters if active_name in r["name"]]
         if matched_reporters:
             # 최신 활동 및 발령일자(last_seen DESC) 순으로 정렬하여 가장 최근 소속 언론인이 기본 선택되도록 보장
             matched_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
@@ -836,6 +944,8 @@ with tab_search:
             selected_reporter_id = filtered_reporters[0]["reporter_id"]
             st.caption(f"선택된 언론인: **{filtered_reporters[0]['display_label']}**")
     elif search_mode == "매체 및 부서별 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val")):
+        st.info("조건에 부합하는 온라인 인사 발령 기록을 찾지 못했습니다.")
+    elif search_mode == "매체 및 이름 검색" and (st.session_state.get("filter_mn_media_val") or st.session_state.get("filter_mn_name_val")):
         st.info("조건에 부합하는 온라인 인사 발령 기록을 찾지 못했습니다.")
 
     # 인사 소식 (발령 명단) 테이블 표시 - 이름 검색 또는 매체/부서별 검색 결과 공통
