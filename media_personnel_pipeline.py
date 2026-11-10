@@ -34,7 +34,8 @@ DB_NAME = "media_personnel.db"
 
 MEDIA_TARGETS = {
     "연합뉴스": "001",
-    "뉴스1": "421"
+    "뉴스1": "421",
+    "중앙일보": "025"
 }
 
 HEADERS = {

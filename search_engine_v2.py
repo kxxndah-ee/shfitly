@@ -17,7 +17,7 @@ class MediaPersonnelEngine:
     def _ensure_view_exists(self):
         """
         [핵심 격리 장치]
-        1. 출처 매체: '연합뉴스', '뉴스1'만 허용
+        1. 출처 매체: '연합뉴스', '뉴스1', '중앙일보' 허용
         2. 기사 제목: '[인사]' 또는 '<인사>' 포함 기사만 허용
         3. 필터링: 순수 언론사 인사(is_media_company = 1)만 허용
         """
@@ -77,8 +77,9 @@ class MediaPersonnelEngine:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+        cur.execute("DROP VIEW IF EXISTS v_media_only_events;")
         cur.execute("""
-        CREATE VIEW IF NOT EXISTS v_media_only_events AS
+        CREATE VIEW v_media_only_events AS
         SELECT 
             c.event_id,
             c.article_id,
@@ -95,7 +96,7 @@ class MediaPersonnelEngine:
             r.publish_date
         FROM career_events c
         JOIN raw_articles r ON c.article_id = r.article_id
-        WHERE r.media_source IN ('연합뉴스', '뉴스1')
+        WHERE r.media_source IN ('연합뉴스', '뉴스1', '중앙일보')
           AND (r.title LIKE '%[인사]%' OR r.title LIKE '%<인사>%')
           AND r.is_media_company = 1;
         """)
@@ -118,7 +119,7 @@ class MediaPersonnelEngine:
         years_back: int = 40
     ) -> List[Dict[str, Any]]:
         """
-        연합뉴스/뉴스1 [인사] 기사 중 특정 언론사 + 부서(+직급)에 발령받은 기자 명단 조회
+        연합뉴스/뉴스1/중앙일보 [인사] 기사 중 특정 언론사 + 부서(+직급)에 발령받은 기자 명단 조회
         """
         conn = self._get_connection()
         cur = conn.cursor()
@@ -214,10 +215,10 @@ class MediaPersonnelEngine:
                 "found": False,
                 "company": company_clean,
                 "name": name_clean,
-                "message": f"최근 {years_back}년간 연합뉴스·뉴스1 [인사] 기사 중 [{company_clean}] 소속 '{name_clean}' 기자의 인사 기록이 없습니다."
+                "message": f"최근 {years_back}년간 연합뉴스·뉴스1·중앙일보 [인사] 기사 중 [{company_clean}] 소속 '{name_clean}' 기자의 인사 기록이 없습니다."
             }
 
-        # 2) 타 언론사 이직 내역 연계 (연합/뉴스1 출처 기반 판정 데이터만)
+        # 2) 타 언론사 이직 내역 연계 (연합/뉴스1/중앙일보 출처 기반 판정 데이터만)
         cur.execute("""
         SELECT 
             t.from_company,
