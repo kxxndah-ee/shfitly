@@ -1484,15 +1484,23 @@ with tab_search:
                 st.dataframe(df_dept_reps, use_container_width=True, hide_index=True)
 
                 if len(filtered_reporters) > 1:
-                    options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
-                    selected_label = st.selectbox(
-                        f"인물 상세 프로필 조회 (총 {len(filtered_reporters)}명 중 선택)",
-                        options=list(options_dict.keys()),
-                        key="sb_matched_reporters_dropdown"
-                    )
-                    sel_rep_id = options_dict[selected_label]
-                    sel_rep = next((r for r in filtered_reporters if r["reporter_id"] == sel_rep_id), None) or db.get_reporter(sel_rep_id)
-                    render_single_reporter_profile(sel_rep, db.get_reporter_timeline(sel_rep_id), db, key_suffix="dept_sel")
+                    if len(filtered_reporters) <= 10:
+                        rep_tab_labels = [f"{r['name']} ({r.get('current_rank', '') or r.get('current_dept', '')})" for r in filtered_reporters]
+                        rep_tabs = st.tabs(rep_tab_labels)
+                        for idx, r_item in enumerate(filtered_reporters):
+                            with rep_tabs[idx]:
+                                sel_rep = db.get_reporter(r_item["reporter_id"]) or r_item
+                                render_single_reporter_profile(sel_rep, db.get_reporter_timeline(r_item["reporter_id"]), db, key_suffix=f"dept_tab_{idx}")
+                    else:
+                        options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
+                        selected_label = st.selectbox(
+                            f"인물 상세 프로필 조회 (총 {len(filtered_reporters)}명 중 선택)",
+                            options=list(options_dict.keys()),
+                            key="sb_matched_reporters_dropdown"
+                        )
+                        sel_rep_id = options_dict[selected_label]
+                        sel_rep = next((r for r in filtered_reporters if r["reporter_id"] == sel_rep_id), None) or db.get_reporter(sel_rep_id)
+                        render_single_reporter_profile(sel_rep, db.get_reporter_timeline(sel_rep_id), db, key_suffix="dept_sel")
                 elif len(filtered_reporters) == 1:
                     rep_only = filtered_reporters[0]
                     render_single_reporter_profile(rep_only, db.get_reporter_timeline(rep_only["reporter_id"]), db, key_suffix="dept_single")

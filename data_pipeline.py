@@ -309,6 +309,21 @@ NON_MEDIA_KEYWORDS: List[str] = [
 ]
 
 
+def is_department_header(hdr: str) -> bool:
+    """해당 헤더가 언론사명이 아닌 사내 부서/실/국/총괄 단위인지 판별합니다."""
+    if not hdr:
+        return False
+    h = hdr.strip()
+    if any(h.endswith(suffix) for suffix in ["실", "국", "부", "팀", "센터", "총괄", "본부", "파트", "데스크", "에디터석", "에디터"]):
+        # 단, 언론사명 자체인 경우 제외 (예: 방송국 제외, 일보/신문 등)
+        if h in KNOWN_MEDIA_NAMES or any(h.endswith(m) for m in ["미디어그룹", "신문사", "방송사", "뉴스룸"]):
+            return False
+        return True
+    if any(k in h for k in ["편집국", "보도국", "논설위원", "경영지원", "인재문화", "마케팅", "디지털", "독자서비스", "독자권익", "사업본부"]):
+        return True
+    return False
+
+
 def is_media_organization(name: str) -> bool:
     """해당 기관/조직명이 언론사(신문/방송/통신/인터넷매체)인지 정밀 판별합니다."""
     if not name:
@@ -316,10 +331,12 @@ def is_media_organization(name: str) -> bool:
     n = name.lower().strip()
     if n in ["2010년", "2011년", "제1", "미상", "온라인뉴스", "뉴스", "언론사", "기자", "본사", "지사", "편집국", "보도국"]:
         return False
+    if is_department_header(n):
+        return False
     if n in KNOWN_MEDIA_NAMES:
         return True
     # 직급명이나 직책명이 포함된 경우 언론사명이 아님
-    if any(r in n for r in ["부장", "차장", "국장", "팀장", "소장", "실장", "본부장", "위원", "기자", "대표", "이사"]):
+    if any(r in n for r in ["부장", "차장", "국장", "팀장", "소장", "실장", "본부장", "부문장", "총괄", "위원", "기자", "대표", "이사"]):
         return False
     for nmk in NON_MEDIA_KEYWORDS:
         if nmk in n:
@@ -433,7 +450,9 @@ class PersonnelRegexParser:
             return None
         if name in STOPWORDS:
             return None
-        if any(name.endswith(suffix) for suffix in ["팀", "실", "국", "부", "처", "센터", "단", "소", "파트"]):
+        if any(name.endswith(suffix) for suffix in ["팀", "실", "국", "부", "처", "센터", "단", "소", "파트", "총괄", "데스크", "에디터", "본부"]):
+            return None
+        if name in ["뉴스총괄", "지면총괄", "뉴스룸", "에디터석", "논설위원", "특파원"]:
             return None
         if any(nmk in name for nmk in NON_MEDIA_KEYWORDS):
             return None
@@ -511,18 +530,20 @@ class PersonnelRegexParser:
             media_match = cls.MEDIA_HEADER_PATTERN.search(line)
             if media_match:
                 cand_media = media_match.group(1).strip()
-                if is_media_organization(cand_media):
+                if is_media_organization(cand_media) and not is_department_header(cand_media):
                     current_media = normalize_media_name(cand_media)
-                else:
+                elif not is_department_header(cand_media):
                     current_media = cand_media
             else:
                 clean_sec_hdr = re.sub(r"^[◇◆■▲△▼▷▶<\[\(【\s]+|[>\]\)】\s]+$", "", line).strip()
                 clean_sec_hdr = re.sub(r"\([^\)]*\)", "", clean_sec_hdr).strip()
                 clean_sec_hdr = re.split(r"[\]\)>】〉»<\[\(【〈«]", clean_sec_hdr)[0].strip()
                 if len(clean_sec_hdr) <= 15 and not any(cls.clean_name(t) for t in line.split()):
-                    if is_media_organization(clean_sec_hdr):
+                    if is_department_header(clean_sec_hdr):
+                        pass
+                    elif is_media_organization(clean_sec_hdr):
                         current_media = normalize_media_name(clean_sec_hdr)
-                    elif any(nmk in clean_sec_hdr for nmk in NON_MEDIA_KEYWORDS) or clean_sec_hdr.endswith(("부", "처", "청", "원", "실", "회", "공사", "공단", "재단", "시", "대", "대학교", "대학", "병원", "학원")):
+                    elif any(nmk in clean_sec_hdr for nmk in NON_MEDIA_KEYWORDS) or clean_sec_hdr.endswith(("처", "청", "원", "회", "공사", "공단", "재단", "시", "대", "대학교", "대학", "병원", "학원")):
                         current_media = clean_sec_hdr
 
             # 2. 발령 액션 및 섹션 직급 헤더 감지 (예: ◇부장대우 승진, ◇차장 승진, <승진>, <보임>, <임용>, ◇전보 등)
@@ -549,10 +570,12 @@ class PersonnelRegexParser:
                 cand_media_clean = re.sub(r"\([^\)]*\)", "", cand_media_clean).strip()
                 cand_media_clean = re.split(r"[\]\)>】〉»<\[\(【〈«]", cand_media_clean)[0].strip()
                 if len(cand_media_clean) <= 15 and not any(cls.clean_name(t) for t in item.split()):
-                    if is_media_organization(cand_media_clean):
+                    if is_department_header(cand_media_clean):
+                        continue
+                    elif is_media_organization(cand_media_clean):
                         current_media = normalize_media_name(cand_media_clean)
                         continue
-                    elif any(nmk in cand_media_clean for nmk in NON_MEDIA_KEYWORDS) or cand_media_clean.endswith(("부", "처", "청", "원", "실", "회", "공사", "공단", "재단", "시", "대", "대학교", "대학", "병원", "학원")):
+                    elif any(nmk in cand_media_clean for nmk in NON_MEDIA_KEYWORDS) or cand_media_clean.endswith(("처", "청", "원", "회", "공사", "공단", "재단", "시", "대", "대학교", "대학", "병원", "학원")):
                         current_media = cand_media_clean
                         continue
 
@@ -1524,13 +1547,21 @@ class OnlineNewsTracker:
         def is_valid_wire_article(tit: str, u: str, pr: str) -> bool:
             if not is_personnel_article_title(tit):
                 return False
-            # 뉴스1, 연합뉴스, 중앙일보, 한국기자협회 기사 허용
-            if pr in ["뉴스1", "연합뉴스", "중앙일보", "한국기자협회", "기자협회"]:
+            # 통신 3사(뉴스1·연합뉴스·뉴시스), 중앙일보, 한국기자협회 기사 허용
+            if pr in ["뉴스1", "연합뉴스", "뉴시스", "중앙일보", "한국기자협회", "기자협회"]:
                 return True
-            if "news1.kr" in u or "yna.co.kr" in u or "joongang.co.kr" in u or "journalist.or.kr" in u:
+            if "news1.kr" in u or "yna.co.kr" in u or "newsis.com" in u or "joongang.co.kr" in u or "journalist.or.kr" in u:
+                return True
+            if "article/421/" in u or "article/001/" in u or "article/003/" in u or "article/025/" in u:
                 return True
             if not pr and ("v.daum.net/v/" in u or "n.news.naver.com" in u):
                 return True
+            # 포털에 송고된 언론사 공식 [인사] 기사 (제목에 [인사]/<인사> 및 언론사명이 포함된 경우)
+            if any(k in tit for k in ["[인사]", "<인사>", "【인사】"]):
+                if target_keyword and target_keyword in tit:
+                    return True
+                if any(m in tit for m in KNOWN_MEDIA_NAMES):
+                    return True
             return False
 
         clean_q = query.replace('"', '').replace("'", "").strip()
@@ -1538,18 +1569,21 @@ class OnlineNewsTracker:
         target_keyword = re.sub(r"[\[<【(]?\s*인사\s*[\]>】)]?", "", clean_q).strip()
         is_general_personnel = (len(target_keyword) == 0)
 
-        # 1. 네이버 검색: 뉴스1(421), 연합뉴스(001), 중앙일보(025), 한국기자협회 기사 실시간 최우선 수집
-        if any(src in clean_q for src in ["뉴스1", "연합뉴스", "중앙일보", "한국기자협회", "기자협회"]):
+        # 1. 네이버 검색: 통신 3사(뉴스1·연합뉴스·뉴시스), 중앙일보(025), 한국기자협회 기사 실시간 최우선 수집
+        if any(src in clean_q for src in ["뉴스1", "연합뉴스", "뉴시스", "중앙일보", "한국기자협회", "기자협회"]):
             wire_queries = [clean_q]
         elif target_keyword:
             wire_queries = [
                 f"{target_keyword} [인사] 뉴스1",
                 f"{target_keyword} [인사] 연합뉴스",
+                f"{target_keyword} [인사] 뉴시스",
                 f"{target_keyword} [인사] 중앙일보",
-                f"{target_keyword} [인사] 기자협회"
+                f"{target_keyword} [인사] 기자협회",
+                f'"{target_keyword}" [인사]',
+                f'[인사] {target_keyword}'
             ]
         else:
-            wire_queries = [f"{clean_q} 뉴스1", f"{clean_q} 연합뉴스", f"{clean_q} 중앙일보", f"{clean_q} 기자협회"]
+            wire_queries = [f"{clean_q} 뉴스1", f"{clean_q} 연합뉴스", f"{clean_q} 뉴시스", f"{clean_q} 중앙일보", f"{clean_q} 기자협회"]
 
         for wq in wire_queries:
             if len(articles) >= max_items:
@@ -1627,6 +1661,8 @@ class OnlineNewsTracker:
                             press_name = "뉴스1"
                         elif "article/001/" in href or "yna.co.kr" in href or "연합뉴스" in title:
                             press_name = "연합뉴스"
+                        elif "article/003/" in href or "newsis.com" in href or "뉴시스" in title:
+                            press_name = "뉴시스"
                         elif "article/025/" in href or "joongang.co.kr" in href or "중앙일보" in title:
                             press_name = "중앙일보"
                         elif "journalist.or.kr" in href or "기자협회" in title:
@@ -1645,7 +1681,7 @@ class OnlineNewsTracker:
             except Exception as e:
                 pass
 
-        # 2. 다음 뉴스 검색 (뉴스1, 연합뉴스, 중앙일보, 한국기자협회 기사 엄격 필터링)
+        # 2. 다음 뉴스 검색 (뉴스1, 연합뉴스, 뉴시스, 중앙일보, 한국기자협회 기사 엄격 필터링)
         daum_queries = list(wire_queries)
         if target_keyword:
             daum_queries = [
@@ -1654,6 +1690,7 @@ class OnlineNewsTracker:
                 f'"[인사]{target_keyword}"',
                 f'"{target_keyword}" "[인사]" 뉴스1',
                 f'"{target_keyword}" "[인사]" 연합뉴스',
+                f'"{target_keyword}" "[인사]" 뉴시스',
                 f'"{target_keyword}" "[인사]" 중앙일보',
                 f'"{target_keyword}" "[인사]" 기자협회'
             ] + daum_queries
@@ -1685,7 +1722,7 @@ class OnlineNewsTracker:
                             seen_urls.add(href)
                             d_match = re.search(r"v\.daum\.net/v/(\d{4})(\d{2})(\d{2})", href)
                             d_text = f"{d_match.group(1)}-{d_match.group(2)}-{d_match.group(3)}" if d_match else ""
-                            m_guess = "뉴스1" if ("뉴스1" in press_name or "news1.kr" in href) else ("연합뉴스" if ("연합뉴스" in press_name or "yna.co.kr" in href) else ("중앙일보" if ("중앙일보" in press_name or "joongang.co.kr" in href) else ("한국기자협회" if ("기자협회" in press_name or "journalist.or.kr" in href) else "언론사")))
+                            m_guess = "뉴스1" if ("뉴스1" in press_name or "news1.kr" in href) else ("연합뉴스" if ("연합뉴스" in press_name or "yna.co.kr" in href) else ("뉴시스" if ("뉴시스" in press_name or "newsis.com" in href) else ("중앙일보" if ("중앙일보" in press_name or "joongang.co.kr" in href) else ("한국기자협회" if ("기자협회" in press_name or "journalist.or.kr" in href) else "언론사"))))
                             articles.append({
                                 "title": title,
                                 "url": href,
@@ -1758,6 +1795,7 @@ class OnlineNewsTracker:
                 rss_targets = [
                     (f'"{target_keyword}" "[인사]" site:news1.kr', "뉴스1"),
                     (f'"{target_keyword}" "[인사]" site:yna.co.kr', "연합뉴스"),
+                    (f'"{target_keyword}" "[인사]" site:newsis.com', "뉴시스"),
                     (f'"{target_keyword}" "[인사]" site:joongang.co.kr', "중앙일보"),
                     (f'"{target_keyword}" "[인사]" site:journalist.or.kr', "한국기자협회")
                 ]
@@ -1765,6 +1803,7 @@ class OnlineNewsTracker:
                 rss_targets = [
                     (f'"{clean_q}" site:news1.kr', "뉴스1"),
                     (f'"{clean_q}" site:yna.co.kr', "연합뉴스"),
+                    (f'"{clean_q}" site:newsis.com', "뉴시스"),
                     (f'"{clean_q}" site:joongang.co.kr', "중앙일보"),
                     (f'"{clean_q}" site:journalist.or.kr', "한국기자협회")
                 ]
@@ -1804,6 +1843,8 @@ class OnlineNewsTracker:
                                         wire_media = "뉴스1"
                                     elif "연합뉴스" in parts[1]:
                                         wire_media = "연합뉴스"
+                                    elif "뉴시스" in parts[1]:
+                                        wire_media = "뉴시스"
                                     elif "중앙일보" in parts[1]:
                                         wire_media = "중앙일보"
                                     elif "기자협회" in parts[1]:
@@ -3264,24 +3305,83 @@ class MediaDatabase:
     def search_reporters(self, name: str = "", media: str = "", dept: str = "", rank: str = "") -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            query = """
-                SELECT DISTINCT r.* FROM reporters r
-                LEFT JOIN personnel_records pr ON r.reporter_id = pr.reporter_id
-                WHERE 1=1
-            """
+            query = "SELECT DISTINCT r.* FROM reporters r WHERE 1=1"
             params = []
             if name:
                 query += " AND r.name LIKE ?"
                 params.append(f"%{name}%")
-            if media:
-                query += " AND (pr.media LIKE ? OR r.current_media LIKE ?)"
+
+            if dept and rank:
+                # 부서와 직급이 모두 지정된 경우: 동일 발령 레코드에서 부서와 직급을 모두 만족하거나, 현재 직책에서 부서와 직급을 모두 만족해야 함
+                query += """ AND (
+                    EXISTS (
+                        SELECT 1 FROM personnel_records pr 
+                        WHERE pr.reporter_id = r.reporter_id
+                    """
+                if media:
+                    query += " AND pr.media LIKE ?"
+                    params.append(f"%{media}%")
+                query += """ AND pr.dept LIKE ? 
+                         AND (pr.rank_title LIKE ? OR pr.dept LIKE ?)
+                    )
+                    OR (
+                    """
+                params.extend([f"%{dept}%", f"%{rank}%", f"%{rank}%"])
+                if media:
+                    query += " r.current_media LIKE ? AND "
+                    params.append(f"%{media}%")
+                query += """ r.current_dept LIKE ? AND r.current_rank LIKE ?
+                    )
+                )"""
+                params.extend([f"%{dept}%", f"%{rank}%"])
+            elif dept:
+                query += """ AND (
+                    EXISTS (
+                        SELECT 1 FROM personnel_records pr 
+                        WHERE pr.reporter_id = r.reporter_id
+                    """
+                if media:
+                    query += " AND pr.media LIKE ?"
+                    params.append(f"%{media}%")
+                query += """ AND pr.dept LIKE ?
+                    )
+                    OR (
+                    """
+                params.append(f"%{dept}%")
+                if media:
+                    query += " r.current_media LIKE ? AND "
+                    params.append(f"%{media}%")
+                query += """ r.current_dept LIKE ?
+                    )
+                )"""
+                params.append(f"%{dept}%")
+            elif rank:
+                query += """ AND (
+                    EXISTS (
+                        SELECT 1 FROM personnel_records pr 
+                        WHERE pr.reporter_id = r.reporter_id
+                    """
+                if media:
+                    query += " AND pr.media LIKE ?"
+                    params.append(f"%{media}%")
+                query += """ AND (pr.rank_title LIKE ? OR pr.dept LIKE ?)
+                    )
+                    OR (
+                    """
+                params.extend([f"%{rank}%", f"%{rank}%"])
+                if media:
+                    query += " r.current_media LIKE ? AND "
+                    params.append(f"%{media}%")
+                query += """ r.current_rank LIKE ?
+                    )
+                )"""
+                params.append(f"%{rank}%")
+            elif media:
+                query += """ AND (
+                    r.current_media LIKE ? OR 
+                    EXISTS (SELECT 1 FROM personnel_records pr WHERE pr.reporter_id = r.reporter_id AND pr.media LIKE ?)
+                )"""
                 params.extend([f"%{media}%", f"%{media}%"])
-            if dept:
-                query += " AND (pr.dept LIKE ? OR r.current_dept LIKE ?)"
-                params.extend([f"%{dept}%", f"%{dept}%"])
-            if rank:
-                query += " AND (pr.rank_title LIKE ? OR pr.dept LIKE ? OR r.current_rank LIKE ?)"
-                params.extend([f"%{rank}%", f"%{rank}%", f"%{rank}%"])
 
             query += " ORDER BY r.last_seen DESC"
             cursor.execute(query, params)
