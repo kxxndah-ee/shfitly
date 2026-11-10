@@ -2864,6 +2864,13 @@ class MediaDatabase:
             merged.sort(key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10])
         return merged
 
+    def get_reporter(self, reporter_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM reporters WHERE reporter_id = ?", (reporter_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
     def get_reporter_timeline(self, reporter_id: str) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()

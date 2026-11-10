@@ -589,9 +589,14 @@ tab_search, tab_monitoring = st.tabs([
 # TAB 1: 검색
 # =========================================================================
 with tab_search:
-    # 3. 검색 모드 선택 (이름 검색 vs 매체 및 부서별 검색 vs 매체 및 이름 검색)
-    search_options = ["이름 검색", "매체 및 부서별 검색", "매체 및 이름 검색"]
+    # 3. 검색 모드 선택 (이름 검색 vs 매체·부서 검색 vs 매체·이름 검색)
+    search_options = ["이름 검색", "매체·부서 검색", "매체·이름 검색"]
     current_mode = st.session_state.get("search_mode_selection", "이름 검색")
+    if current_mode == "매체 및 부서별 검색":
+        current_mode = "매체·부서 검색"
+    elif current_mode == "매체 및 이름 검색":
+        current_mode = "매체·이름 검색"
+    st.session_state["search_mode_selection"] = current_mode
     default_mode_idx = search_options.index(current_mode) if current_mode in search_options else 0
 
     col_mode, col_quick_btn = st.columns([3.5, 1], vertical_alignment="bottom")
@@ -619,7 +624,7 @@ with tab_search:
         if not is_media_organization(r["name"]) and not is_excluded_department(r.get("current_dept", ""))
     ]
 
-    # 1. 이름 검색 (폰트 및 사이즈는 매체 및 부서별 검색과 동일)
+    # 1. 이름 검색 (폰트 및 사이즈는 매체·부서 검색과 동일)
     if search_mode == "이름 검색":
         st.markdown("##### 이름 검색")
         col_search_box, col_search_empty = st.columns([1, 2])
@@ -697,9 +702,9 @@ with tab_search:
                     st.session_state["active_search_name"] = target_name
                     st.rerun()
 
-    # 2. 매체 및 부서별 검색 (검색 버튼 포함, 50% 길이 축소)
-    elif search_mode == "매체 및 부서별 검색":
-        st.markdown("##### 매체 및 부서별 검색")
+    # 2. 매체·부서 검색 (검색 버튼 포함, 50% 길이 축소)
+    elif search_mode == "매체·부서 검색":
+        st.markdown("##### 매체·부서 검색")
         col_form_half, col_empty_half = st.columns([1, 1])
         is_searching_media = st.session_state.get("is_searching_media", False)
 
@@ -745,6 +750,8 @@ with tab_search:
                         # 무조건 실시간 온라인 검색을 디폴트로 실행
                         st.session_state["is_searching_media"] = True
                         st.rerun()
+                    else:
+                        st.warning("매체명, 부서명 또는 직급명을 입력해주세요.")
 
         if is_searching_media:
             stop_event_med = threading.Event()
@@ -777,9 +784,9 @@ with tab_search:
                     st.session_state["upload_banner"] = res.get("message", "검색이 완료되었습니다.")
                     st.rerun()
 
-    # 3. 매체 및 이름 검색 (매체명 + 기자 이름)
-    elif search_mode == "매체 및 이름 검색":
-        st.markdown("##### 매체 및 이름 검색")
+    # 3. 매체·이름 검색 (매체명 + 기자 이름)
+    elif search_mode == "매체·이름 검색":
+        st.markdown("##### 매체·이름 검색")
         col_form_half, col_empty_half = st.columns([1, 1])
         is_searching_mn = st.session_state.get("is_searching_media_name", False)
 
@@ -873,7 +880,7 @@ with tab_search:
             ]
         else:
             matched_records = []
-    elif search_mode == "매체 및 부서별 검색":
+    elif search_mode == "매체·부서 검색":
         active_name = ""
         m_val = st.session_state.get("filter_media_val", "")
         d_val = st.session_state.get("filter_dept_val", "")
@@ -881,53 +888,53 @@ with tab_search:
         if m_val or d_val or r_val:
             filtered_reporters = [
                 r for r in db.search_reporters(media=m_val, dept=d_val, rank=r_val)
-                if not is_media_organization(r["name"])
+                if not is_media_organization(r["name"]) and not is_excluded_department(r.get("current_dept", ""))
             ]
             matched_records = [
                 r for r in db.search_records(media=m_val, dept=d_val, rank=r_val)
-                if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+                if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", ""))) and not is_excluded_department(r.get("dept", ""))
             ]
             # 직급(예: 부장) 조건으로 0건일 때, 동일 부서(예: 건설부동산부) 타 직급(차장 등) 발령 자동 감지 및 안내
             if not matched_records and r_val and (m_val or d_val):
                 alt_records = [
                     r for r in db.search_records(media=m_val, dept=d_val)
-                    if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+                    if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", ""))) and not is_excluded_department(r.get("dept", ""))
                 ]
                 if alt_records:
                     matched_records = alt_records
                     filtered_reporters = [
                         r for r in db.search_reporters(media=m_val, dept=d_val)
-                        if not is_media_organization(r["name"])
+                        if not is_media_organization(r["name"]) and not is_excluded_department(r.get("current_dept", ""))
                     ]
                     dep_txt = f"{m_val} {d_val}".strip()
                     alt_search_note = f"'{dep_txt}' 부서에 '{r_val}' 직급 발령 기록은 확인되지 않았으나, 동일 부서의 타 직급 발령({len(alt_records)}건)이 확인되어 안내합니다."
                 elif m_val and not d_val:
                     alt_records = [
                         r for r in db.search_records(media=m_val)
-                        if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+                        if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", ""))) and not is_excluded_department(r.get("dept", ""))
                     ]
                     if alt_records:
                         matched_records = alt_records
                         filtered_reporters = [
                             r for r in db.search_reporters(media=m_val)
-                            if not is_media_organization(r["name"])
+                            if not is_media_organization(r["name"]) and not is_excluded_department(r.get("current_dept", ""))
                         ]
                         alt_search_note = f"'{m_val}'에 '{r_val}' 직급 발령 기록은 확인되지 않았으나, 해당 언론사의 발령 기록({len(alt_records)}건)이 확인되어 안내합니다."
         else:
             filtered_reporters = all_reporters
             matched_records = []
-    elif search_mode == "매체 및 이름 검색":
+    elif search_mode == "매체·이름 검색":
         m_val = st.session_state.get("filter_mn_media_val", "")
         n_val = st.session_state.get("filter_mn_name_val", "")
         active_name = n_val
         if m_val or n_val:
             filtered_reporters = [
                 r for r in db.search_reporters(media=m_val, name=n_val)
-                if not is_media_organization(r["name"])
+                if not is_media_organization(r["name"]) and not is_excluded_department(r.get("current_dept", ""))
             ]
             matched_records = [
                 r for r in db.search_records(media=m_val, name=n_val)
-                if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+                if is_media_organization(r.get("media", "")) and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", ""))) and not is_excluded_department(r.get("dept", ""))
             ]
         else:
             filtered_reporters = all_reporters
@@ -935,16 +942,16 @@ with tab_search:
 
     # 등록된 언론인 목록 / 인물 선택 및 인사 발령 명단 표시
     if active_name:
-        if search_mode == "매체 및 이름 검색" and st.session_state.get("filter_mn_media_val", ""):
+        if search_mode == "매체·이름 검색" and st.session_state.get("filter_mn_media_val", ""):
             matched_reporters = [r for r in filtered_reporters if active_name in r["name"]]
         else:
             matched_reporters = [r for r in filtered_reporters if active_name in r["name"]] if filtered_reporters else [r for r in all_reporters if active_name in r["name"]]
         if matched_reporters:
-            matched_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
+            matched_reporters.sort(key=lambda x: (x.get("name", "") == active_name, str(x.get("last_seen", ""))), reverse=True)
             if len(matched_reporters) > 1:
                 options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
                 selected_label = st.selectbox(
-                    f"인물 선택 : 검색된 기자 {len(matched_reporters)}명",
+                    f"인물 선택 : 검색된 언론인 {len(matched_reporters)}명",
                     options=list(options_dict.keys())
                 )
                 selected_reporter_id = options_dict[selected_label]
@@ -952,9 +959,9 @@ with tab_search:
                 selected_reporter_id = matched_reporters[0]["reporter_id"]
                 st.caption(f"선택된 언론인: **{matched_reporters[0]['display_label']}**")
         else:
-            if search_mode == "매체 및 이름 검색" and st.session_state.get("filter_mn_media_val", ""):
+            if search_mode == "매체·이름 검색" and st.session_state.get("filter_mn_media_val", ""):
                 m_filter = st.session_state.get("filter_mn_media_val", "")
-                other_reps = [r for r in db.search_reporters(name=active_name) if not is_media_organization(r["name"])]
+                other_reps = [r for r in db.search_reporters(name=active_name) if not is_media_organization(r["name"]) and not is_excluded_department(r.get("current_dept", ""))]
                 if other_reps:
                     other_medias = list(dict.fromkeys([r.get("current_media", "") for r in other_reps if r.get("current_media")]))
                     st.info(f"'{m_filter}' 소속의 '{active_name}' 기자 발령 기록은 확인되지 않았으나, 타 매체({', '.join(other_medias)}) 소속 기록({len(other_reps)}명)이 확인되었습니다.")
@@ -962,7 +969,7 @@ with tab_search:
                     st.info(f"최근 40개년 온라인 공식 인사 기사에서 '{m_filter}' 소속 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
             else:
                 st.info(f"온라인 인사 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
-    elif filtered_reporters and search_mode != "매체 및 부서별 검색":
+    elif filtered_reporters and search_mode == "이름 검색":
         filtered_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
         if len(filtered_reporters) > 1:
             options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
@@ -974,11 +981,11 @@ with tab_search:
         else:
             selected_reporter_id = filtered_reporters[0]["reporter_id"]
             st.caption(f"선택된 언론인: **{filtered_reporters[0]['display_label']}**")
-    elif search_mode == "매체 및 부서별 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val") or st.session_state.get("filter_rank_val")):
+    elif search_mode == "매체·부서 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val") or st.session_state.get("filter_rank_val")):
         if not matched_records:
             target_kw = " ".join(filter(None, [st.session_state.get("filter_media_val"), st.session_state.get("filter_dept_val"), st.session_state.get("filter_rank_val")]))
             st.info(f"조건에 부합하는 최근 40개년 온라인 인사 발령 기록을 찾지 못했습니다: '{target_kw}'")
-    elif search_mode == "매체 및 이름 검색" and (st.session_state.get("filter_mn_media_val") or st.session_state.get("filter_mn_name_val")):
+    elif search_mode == "매체·이름 검색" and (st.session_state.get("filter_mn_media_val") or st.session_state.get("filter_mn_name_val")):
         if not matched_records:
             st.info("조건에 부합하는 최근 40개년 온라인 인사 발령 기록을 찾지 못했습니다.")
 
@@ -992,7 +999,7 @@ with tab_search:
         d_val = st.session_state.get("filter_dept_val", "")
         r_val = st.session_state.get("filter_rank_val", "")
 
-        if search_mode == "매체 및 부서별 검색":
+        if search_mode == "매체·부서 검색":
             if alt_search_note:
                 section_title = f"{m_val} {d_val} 발령 명단 (동일 부서 타 직급 포함)".strip()
             else:
@@ -1008,7 +1015,7 @@ with tab_search:
                 title_parts.append("발령 명단")
                 section_title = " ".join(title_parts)
             badge_title = f"최근 40개년(1986~2026) · 총 {len(unique_matched)}건"
-        elif search_mode == "매체 및 이름 검색":
+        elif search_mode == "매체·이름 검색":
             mn_m = st.session_state.get("filter_mn_media_val", "")
             mn_n = st.session_state.get("filter_mn_name_val", "")
             mn_label = " ".join(filter(None, [mn_m, mn_n]))
@@ -1063,22 +1070,24 @@ with tab_search:
             hide_index=True
         )
 
-        # 매체 및 부서별 검색 시 역대 명단 바로 아래에서 인물 선택하여 상세 프로필 조회 가능
-        if search_mode == "매체 및 부서별 검색" and filtered_reporters:
+        # 매체·부서 검색 및 매체·이름 검색(기자 이름 미입력 시) 역대 명단 바로 아래에서 인물 선택하여 상세 프로필 조회 가능
+        if not selected_reporter_id and filtered_reporters:
             filtered_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
-            kw_tag = r_val or d_val or m_val
+            kw_tag = r_val or d_val or m_val if search_mode == "매체·부서 검색" else st.session_state.get("filter_mn_media_val", "")
             select_label_prefix = f"인물 상세 프로필 조회 (역대 {kw_tag} 언론인 {len(filtered_reporters)}명 중 선택)" if kw_tag else f"인물 선택 : 검색된 언론인 {len(filtered_reporters)}명"
             options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
             selected_label = st.selectbox(
                 select_label_prefix,
                 options=list(options_dict.keys()),
-                key="sb_media_dept_reporters"
+                key="sb_matched_reporters_dropdown"
             )
             selected_reporter_id = options_dict[selected_label]
 
     # 선택된 기자의 상세 프로필 및 타임라인 렌더링
     if selected_reporter_id:
         reporter_obj = next((r for r in all_reporters if r["reporter_id"] == selected_reporter_id), None)
+        if not reporter_obj:
+            reporter_obj = db.get_reporter(selected_reporter_id)
         timeline = db.get_reporter_timeline(selected_reporter_id)
 
         if reporter_obj and timeline:

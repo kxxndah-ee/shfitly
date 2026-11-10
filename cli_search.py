@@ -9,7 +9,7 @@ console = Console()
 engine = MediaPersonnelEngine()
 
 def run_org_dept_search():
-    console.print("\n[bold cyan]1. [언론사 조직] 매체 및 부서별 검색[/bold cyan]")
+    console.print("\n[bold cyan]1. [언론사 조직] 매체·부서 검색[/bold cyan]")
     console.print("[dim]※ 출처: 연합뉴스·뉴스1 [인사]/<인사> (최근 40년 전수 데이터)[/dim]")
     
     company = Prompt.ask("• 언론사명 (필수)", default="조선일보")
@@ -50,7 +50,7 @@ def run_org_dept_search():
 
 
 def run_media_name_search():
-    console.print("\n[bold cyan]2. [기자 이력] 매체 및 이름 검색[/bold cyan]")
+    console.print("\n[bold cyan]2. [기자 이력] 매체·이름 검색[/bold cyan]")
     console.print("[dim]※ 출처: 연합뉴스·뉴스1 [인사]/<인사> (최근 40년 전수 데이터)[/dim]")
     
     company = Prompt.ask("• 대상 언론사명 (필수)", default="한국경제")
@@ -103,8 +103,8 @@ def run_media_name_search():
 def main():
     while True:
         console.print("\n[bold green]=== 언론사 인사 트래커 (연합뉴스·뉴스1 / 40년 데이터) ===[/bold green]")
-        console.print("1. 매체 및 부서별 검색 (직급 필터 포함)")
-        console.print("2. 매체 및 이름 검색 (타임라인 + 이직 추적)")
+        console.print("1. 매체·부서 검색 (직급 필터 포함)")
+        console.print("2. 매체·이름 검색 (타임라인 + 이직 추적)")
         console.print("0. 종료")
 
         choice = Prompt.ask("메뉴 번호 선택", choices=["1", "2", "0"], default="1")
