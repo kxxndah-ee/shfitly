@@ -575,9 +575,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-if "upload_banner" in st.session_state and st.session_state["upload_banner"]:
-    st.success(st.session_state["upload_banner"])
-
 tab_search, tab_monitoring = st.tabs([
     "1. 검색",
     "2. 인사 모니터링"
@@ -930,422 +927,628 @@ with tab_search:
             filtered_reporters = all_reporters
             matched_records = []
 
-    # 등록된 언론인 목록 / 인물 선택 및 인사 발령 명단 표시
-    if active_name:
-        if search_mode == "매체·이름 검색" and st.session_state.get("filter_mn_media_val", ""):
-            matched_reporters = [r for r in filtered_reporters if active_name in r["name"]]
-        else:
-            matched_reporters = [r for r in filtered_reporters if active_name in r["name"]] if filtered_reporters else [r for r in all_reporters if active_name in r["name"]]
-        if matched_reporters:
-            matched_reporters.sort(key=lambda x: (x.get("name", "") == active_name, str(x.get("last_seen", ""))), reverse=True)
-            if len(matched_reporters) > 1:
-                options_dict = {r["display_label"]: r["reporter_id"] for r in matched_reporters}
-                selected_label = st.selectbox(
-                    f"인물 선택 : 검색된 언론인 {len(matched_reporters)}명",
-                    options=list(options_dict.keys())
-                )
-                selected_reporter_id = options_dict[selected_label]
-            else:
-                selected_reporter_id = matched_reporters[0]["reporter_id"]
-                st.caption(f"선택된 언론인: **{matched_reporters[0]['display_label']}**")
-        else:
-            if search_mode == "매체·이름 검색" and st.session_state.get("filter_mn_media_val", ""):
-                m_filter = st.session_state.get("filter_mn_media_val", "")
-                other_reps = [r for r in db.search_reporters(name=active_name) if not is_media_organization(r["name"]) and not is_excluded_department(r.get("current_dept", ""))]
-                if other_reps:
-                    other_medias = list(dict.fromkeys([r.get("current_media", "") for r in other_reps if r.get("current_media")]))
-                    st.info(f"'{m_filter}' 소속의 '{active_name}' 기자 발령 기록은 확인되지 않았으나, 타 매체({', '.join(other_medias)}) 소속 기록({len(other_reps)}명)이 확인되었습니다.")
-                else:
-                    st.info(f"아카이브 전체 기간 온라인 공식 인사 기사에서 '{m_filter}' 소속 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
-            else:
-                st.info(f"온라인 인사 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
-    elif filtered_reporters and search_mode == "이름 검색":
-        filtered_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
-        if len(filtered_reporters) > 1:
-            options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
-            selected_label = st.selectbox(
-                f"인물 선택 : 검색된 언론인 {len(filtered_reporters)}명",
-                options=list(options_dict.keys())
-            )
-            selected_reporter_id = options_dict[selected_label]
-        else:
-            selected_reporter_id = filtered_reporters[0]["reporter_id"]
-            st.caption(f"선택된 언론인: **{filtered_reporters[0]['display_label']}**")
-    elif search_mode == "매체·부서 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val") or st.session_state.get("filter_rank_val")):
-        if not matched_records:
-            target_kw = " ".join(filter(None, [st.session_state.get("filter_media_val"), st.session_state.get("filter_dept_val"), st.session_state.get("filter_rank_val")]))
-            st.info(f"조건에 부합하는 온라인 인사 발령 기록(아카이브 전체 기간)을 찾지 못했습니다: '{target_kw}'")
-    elif search_mode == "매체·이름 검색" and (st.session_state.get("filter_mn_media_val") or st.session_state.get("filter_mn_name_val")):
-        if not matched_records:
-            st.info("조건에 부합하는 온라인 인사 발령 기록(아카이브 전체 기간)을 찾지 못했습니다.")
+    def render_single_reporter_profile(reporter_obj: Dict[str, Any], timeline: List[Dict[str, Any]], db_inst: Any, key_suffix: str = ""):
+        if not reporter_obj or not timeline:
+            st.info("해당 언론인의 발령 기록 상세 데이터가 없습니다.")
+            return
 
-    # 발령 명단 테이블 표시 (역대 부장/차장 리스트업 및 실시간 발령 명단)
-    if matched_records:
-        # 동일한 인사는 가장 빠른 기사 일자(Earliest Date) 기준으로 단일화 및 최신 발령일자순 정렬
-        unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
-        unique_matched = [r for r in unique_matched if not is_excluded_department(r.get("dept", ""))]
+        metrics = generate_career_profile_metrics(timeline, reporter_obj)
+        all_jc = db_inst.get_job_changes(limit=500)
+        rep_jc = [jc for jc in all_jc if jc.get("reporter_id") == reporter_obj.get("reporter_id") or jc.get("name") == reporter_obj.get("name")]
 
-        m_val = st.session_state.get("filter_media_val", "")
-        d_val = st.session_state.get("filter_dept_val", "")
-        r_val = st.session_state.get("filter_rank_val", "")
+        excel_bytes = generate_career_excel(reporter_obj, timeline, rep_jc)
+        df_timeline = pd.DataFrame(timeline)
+        csv_bytes = df_timeline.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
 
-        if search_mode == "매체·부서 검색":
-            if alt_search_note:
-                section_title = f"{m_val} {d_val} 발령 명단 (동일 부서 타 직급 포함)".strip()
-            else:
-                title_parts = []
-                if m_val:
-                    title_parts.append(m_val)
-                if d_val:
-                    title_parts.append(d_val)
-                if r_val:
-                    title_parts.append(f"역대 {r_val}")
-                elif not r_val and (m_val or d_val):
-                    title_parts.append("역대")
-                title_parts.append("발령 명단")
-                section_title = " ".join(title_parts)
-            badge_title = f"아카이브 전체 기간 · 총 {len(unique_matched)}건"
-        elif search_mode == "매체·이름 검색":
-            mn_m = st.session_state.get("filter_mn_media_val", "")
-            mn_n = st.session_state.get("filter_mn_name_val", "")
-            mn_label = " ".join(filter(None, [mn_m, mn_n]))
-            section_title = f"{mn_label} 발령 내역" if mn_label else "인사 소식"
-            badge_title = f"아카이브 전체 기간 · 총 {len(unique_matched)}건"
-        else:
-            section_title = "인사 소식"
-            badge_title = f"아카이브 전체 기간 실시간 발령 명단 · 총 {len(unique_matched)}건"
-
-        if alt_search_note:
-            st.info(alt_search_note)
-
-        render_html(f"""
-        <div class="topic-section-divider"></div>
-        <div class="topic-section-header">
-            <div class="topic-title-wrapper">
-                <span class="topic-accent-bar" style="background-color: #2563EB;"></span>
-                <span class="topic-section-title">{section_title}</span>
-                <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">{badge_title}</span>
-            </div>
-        </div>
-        """)
-
-        df_display = pd.DataFrame([{
-            "발령일자": r.get("pub_date", ""),
-            "언론사": normalize_media_name(r.get("media", "")),
-            "발령구분": r.get("action_type", "발령"),
-            "부서": r.get("dept", ""),
-            "직급": r.get("rank_title", ""),
-            "성명": r.get("name", ""),
-            "기사원문(링크주소)": r.get("article_url", "")
-        } for r in unique_matched[:500]])
-        st.dataframe(
-            df_display,
-            column_config={
-                "발령일자": st.column_config.TextColumn("발령일자", alignment="center"),
-                "언론사": st.column_config.TextColumn("언론사", alignment="center"),
-                "발령구분": st.column_config.TextColumn("발령구분", alignment="center"),
-                "부서": st.column_config.TextColumn("부서", alignment="center"),
-                "직급": st.column_config.TextColumn("직급", alignment="center"),
-                "성명": st.column_config.TextColumn("성명", alignment="center"),
-                "기사원문(링크주소)": st.column_config.LinkColumn(
-                    "기사원문(링크주소)",
-                    alignment="center",
-                    help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
-                    validate=r"^https?://.*",
-                    max_chars=60,
-                    display_text="기사 원문 열기"
-                )
-            },
-            use_container_width=True, 
-            hide_index=True
-        )
-
-        # 매체·부서 검색 및 매체·이름 검색(기자 이름 미입력 시) 역대 명단 바로 아래에서 인물 선택하여 상세 프로필 조회 가능
-        if not selected_reporter_id and filtered_reporters:
-            filtered_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
-            kw_tag = r_val or d_val or m_val if search_mode == "매체·부서 검색" else st.session_state.get("filter_mn_media_val", "")
-            select_label_prefix = f"인물 상세 프로필 조회 (역대 {kw_tag} 언론인 {len(filtered_reporters)}명 중 선택)" if kw_tag else f"인물 선택 : 검색된 언론인 {len(filtered_reporters)}명"
-            options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
-            selected_label = st.selectbox(
-                select_label_prefix,
-                options=list(options_dict.keys()),
-                key="sb_matched_reporters_dropdown"
-            )
-            selected_reporter_id = options_dict[selected_label]
-
-    # 선택된 기자의 상세 프로필 및 타임라인 렌더링
-    if selected_reporter_id:
-        reporter_obj = next((r for r in all_reporters if r["reporter_id"] == selected_reporter_id), None)
-        if not reporter_obj:
-            reporter_obj = db.get_reporter(selected_reporter_id)
-        timeline = db.get_reporter_timeline(selected_reporter_id)
-
-        if reporter_obj and timeline:
-            # 30개년 커리어 지표 및 로드맵 산출
-            metrics = generate_career_profile_metrics(timeline, reporter_obj)
-            all_jc = db.get_job_changes(limit=500)
-            rep_jc = [jc for jc in all_jc if jc.get("reporter_id") == selected_reporter_id or jc.get("name") == reporter_obj["name"]]
-
-            # 엑셀 및 CSV 바이트 버퍼 생성
-            excel_bytes = generate_career_excel(reporter_obj, timeline, rep_jc)
-            df_timeline = pd.DataFrame(timeline)
-            csv_bytes = df_timeline.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-
-            # 1. 상단 프로필 헤더 및 다운로드 액션 바
-            render_html('<div class="topic-section-divider"></div>')
-            col_phead, col_pdl1, col_pdl2 = st.columns([3, 1.2, 1.2], vertical_alignment="center")
-            with col_phead:
-                render_html(f"""
-                <div class="topic-section-header" style="margin-bottom: 0;">
-                    <div class="topic-title-wrapper">
-                        <span class="topic-accent-bar" style="background-color: #4F46E5;"></span>
-                        <span class="topic-section-title">{reporter_obj['name']} 프로필</span>
-                        <span class="badge badge-career" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">총 {metrics.get('career_years', 1)}년차</span>
-                    </div>
-                </div>
-                """)
-            with col_pdl1:
-                st.download_button(
-                    "프로필 엑셀 다운로드",
-                    data=excel_bytes,
-                    file_name=f"{reporter_obj['name']}_커리어_프로필.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            with col_pdl2:
-                st.download_button(
-                    "발령 연대기 다운로드",
-                    data=csv_bytes,
-                    file_name=f"{reporter_obj['name']}_발령연대기.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-
-            current_media = reporter_obj["current_media"]
-            current_dept = reporter_obj["current_dept"]
-            current_rank = reporter_obj["current_rank"]
-            email = reporter_obj.get("email", "")
-
-            # 2. 프로필 요약 카드
+        # 1. 상단 프로필 헤더 및 다운로드 액션 바
+        render_html('<div class="topic-section-divider"></div>')
+        col_phead, col_pdl1, col_pdl2 = st.columns([3, 1.2, 1.2], vertical_alignment="center")
+        with col_phead:
             render_html(f"""
-            <div class="profile-card">
-                <div class="profile-name">
-                    <span>{reporter_obj['name']}</span>
-                    <span class="badge badge-transfer">{current_media}</span>
-                    <span class="badge badge-normal">{current_dept}</span>
-                    <span class="badge badge-promotion">{current_rank}</span>
-                    <span class="badge badge-career">총 {metrics.get('career_years', 1)}년차 : {metrics.get('first_year', 1965)}년 ~ {metrics.get('last_year', 2026)}년</span>
-                    {'<span class="badge badge-jobchange">이직 ' + str(metrics.get('job_change_count', 0)) + '회</span>' if metrics.get('job_change_count', 0) > 0 else ''}
-                </div>
-                <div class="profile-meta">
-                    • <b>고유 식별자:</b> <code>{reporter_obj['reporter_id']}</code><br>
-                    • <b>바이라인 이메일:</b> {f'<a href="mailto:{email}">{email}</a>' if email else '<span style="color:#94A3B8;">미등록</span>'}<br>
-                    • <b>활동 추적 기간:</b> {metrics.get('first_date')} ~ {metrics.get('last_date')} : 총 {metrics.get('total_records', len(timeline))}건 발령 및 활동 수집, 승진 {metrics.get('promotion_count', 0)}회, 이직 {metrics.get('job_change_count', 0)}회<br>
-                    • <b>주요 출입처 전문분야:</b> <b style="color:#0F172A;">{metrics.get('primary_domain', '일반')}</b>
-                </div>
-            </div>
-            """)
-
-            # 3. 4대 핵심 커리어 KPI 지표 카드
-            kcol1, kcol2, kcol3, kcol4 = st.columns(4)
-            with kcol1:
-                render_html(f"""
-                <div class="metric-card">
-                    <div class="metric-label">총 경력 연차</div>
-                    <div class="metric-value">{metrics.get('career_years', 1)}년차</div>
-                    <div class="metric-sub">{metrics.get('first_year', 1965)}년 ~ {metrics.get('last_year', 2026)}년</div>
-                </div>
-                """)
-            with kcol2:
-                render_html(f"""
-                <div class="metric-card">
-                    <div class="metric-label">현재 소속 및 직급</div>
-                    <div class="metric-value" style="font-size:1.4rem;">{current_media}</div>
-                    <div class="metric-sub" style="color:#475569;">{current_dept} {current_rank}</div>
-                </div>
-                """)
-            with kcol3:
-                render_html(f"""
-                <div class="metric-card">
-                    <div class="metric-label">주요 출입처 전문분야</div>
-                    <div class="metric-value" style="font-size:1.4rem;">{metrics.get('primary_domain', '일반')}</div>
-                    <div class="metric-sub">발령 및 활동 기사 기반</div>
-                </div>
-                """)
-            with kcol4:
-                render_html(f"""
-                <div class="metric-card">
-                    <div class="metric-label">매체 간 이직 횟수</div>
-                    <div class="metric-value">{metrics.get('job_change_count', 0)}회</div>
-                    <div class="metric-sub">총 {len(metrics.get('affiliation_journey', []))}개 언론사 활동</div>
-                </div>
-                """)
-
-            # 4. 소속 매체 이동 로드맵 (12. 이직)
-            render_html('<div class="topic-section-divider"></div>')
-            render_html("""
-            <div class="topic-section-header">
+            <div class="topic-section-header" style="margin-bottom: 0;">
                 <div class="topic-title-wrapper">
-                    <span class="topic-accent-bar" style="background-color: #8B5CF6;"></span>
-                    <span class="topic-section-title">이직</span>
-                    <span class="badge badge-jobchange" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">매체 이동 로드맵</span>
+                    <span class="topic-accent-bar" style="background-color: #4F46E5;"></span>
+                    <span class="topic-section-title">{reporter_obj['name']} 프로필</span>
+                    <span class="badge badge-career" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">총 {metrics.get('career_years', 1)}년차</span>
                 </div>
             </div>
             """)
-            aff_list = metrics.get("affiliation_journey", [])
-            if aff_list:
-                roadmap_html = '<div class="roadmap-container">'
-                for idx, aff in enumerate(aff_list):
-                    roadmap_html += f"""
-                    <div class="roadmap-node">
-                        <div class="roadmap-media">{aff['media']}</div>
-                        <div class="roadmap-period">{aff['start_year']}년 ~ {aff['end_year']}년 : {aff['last_dept']} {aff['last_rank']}</div>
-                    </div>
-                    """
-                    if idx < len(aff_list) - 1:
-                        roadmap_html += '<div class="roadmap-arrow">➔</div>'
-                roadmap_html += '</div>'
-                render_html(roadmap_html)
-            else:
-                render_html("""
-                <div class="sub-card-box" style="color: #64748B; font-size: 0.88rem; padding: 16px 20px;">
-                    확인된 매체 간 이직 이력이 없습니다. (단일 언론사 재직)
-                </div>
-                """)
-
-            # 5. 직급 성장 (13. 승진) & 출입처 도메인 분석
-            render_html('<div class="topic-section-divider"></div>')
-            render_html("""
-            <div class="topic-section-header">
-                <div class="topic-title-wrapper">
-                    <span class="topic-accent-bar" style="background-color: #10B981;"></span>
-                    <span class="topic-section-title">승진</span>
-                    <span class="badge badge-promotion" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">직급 승진 사다리 및 전문 분야</span>
-                </div>
-            </div>
-            """)
-            l_col, d_col = st.columns([1.2, 1])
-            with l_col:
-                l_items = metrics.get("promotion_ladder", [])
-                if l_items:
-                    ladder_html = '<div class="sub-card-box">'
-                    ladder_html += '<div class="sub-card-title">직급 성장 사다리</div>'
-                    ladder_html += '<div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px;">'
-                    for idx, l in enumerate(l_items):
-                        ladder_html += f"""
-                        <div style="background:#FFFFFF; border:1px solid #CBD5E1; border-radius:8px; padding:6px 12px; font-size:0.85rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
-                            <b style="color:#0F172A;">{l['rank_title']}</b> <span style="color:#64748B; margin-left:4px;">{l['year']}년 {l['media']}</span>
-                        </div>
-                        """
-                        if idx < len(l_items) - 1:
-                            ladder_html += '<span style="color:#94A3B8; font-weight:700;">➔</span>'
-                    ladder_html += '</div></div>'
-                    render_html(ladder_html)
-                else:
-                    render_html("""
-                    <div class="sub-card-box">
-                        <div class="sub-card-title">직급 성장 사다리</div>
-                        <div style="color:#64748B; font-size:0.88rem;">단일 직급 활동 기록이 확인되었습니다.</div>
-                    </div>
-                    """)
-
-            with d_col:
-                d_breakdown = metrics.get("domain_breakdown", [])
-                if d_breakdown:
-                    d_html = '<div class="sub-card-box">'
-                    d_html += '<div class="sub-card-title">출입처 도메인 전문성</div>'
-                    d_html += '<div style="display:flex; flex-wrap:wrap; gap:6px;">'
-                    for db_item in d_breakdown[:4]:
-                        d_html += f"""
-                        <span class="badge badge-normal" style="padding:6px 10px; font-size:0.8rem; border:1px solid #CBD5E1;">
-                            <b style="color:#0F172A;">{db_item['domain']}</b> <span style="color:#2563EB; font-weight:700;">{db_item['percentage']}%</span> <span style="color:#64748B;">({db_item['count']}건)</span>
-                        </span>
-                        """
-                    d_html += '</div></div>'
-                    render_html(d_html)
-                else:
-                    render_html("""
-                    <div class="sub-card-box">
-                        <div class="sub-card-title">출입처 도메인 전문성</div>
-                        <div style="color:#64748B; font-size:0.88rem;">출입처 분석 데이터가 충분하지 않습니다.</div>
-                    </div>
-                    """)
-
-            # 6. 연대기 타임라인 (14. 타임라인)
-            render_html('<div class="topic-section-divider"></div>')
-            render_html("""
-            <div class="topic-section-header">
-                <div class="topic-title-wrapper">
-                    <span class="topic-accent-bar" style="background-color: #0284C7;"></span>
-                    <span class="topic-section-title">타임라인</span>
-                    <span class="badge badge-normal" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">발령 연대기</span>
-                </div>
-            </div>
-            """)
-            st.caption("기사 원문 링크를 클릭하면 해당 시점의 실제 뉴스 기사 웹페이지로 이동합니다.")
-
-            # 타임라인 카드 렌더링 (1. 최근순 정렬, 2. 날짜는 박스 위에 표기)
-            timeline_desc = sorted(
-                timeline,
-                key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10],
-                reverse=True
-            )
-            timeline_html = '<div class="timeline-container">'
-            for item in timeline_desc:
-                action = item.get("action_type", "발령")
-                is_job_change = "이직" in action
-                dot_class = "timeline-dot timeline-dot-jobchange" if is_job_change else "timeline-dot"
-
-                if is_job_change:
-                    badge_html = f'<span class="badge badge-jobchange">{action}</span>'
-                elif "승진" in action:
-                    badge_html = f'<span class="badge badge-promotion">{action}</span>'
-                elif "전보" in action or "보직" in action:
-                    badge_html = f'<span class="badge badge-transfer">{action}</span>'
-                else:
-                    badge_html = f'<span class="badge badge-normal">{action}</span>'
-
-                art_url = item.get("article_url", "")
-                art_title = item.get("article_title", "")
-                if art_url:
-                    link_html = f'<div style="margin-top:6px;"><a href="{art_url}" target="_blank" style="font-size:0.85rem; font-weight:600; color:#2563EB; text-decoration:underline;">기사 원문: {art_title or "온라인 기사 보기"}</a></div>'
-                elif art_title:
-                    link_html = f'<div style="margin-top:6px; font-size:0.85rem; color:#475569;">기사 제목: <b>{art_title}</b></div>'
-                else:
-                    link_html = ''
-
-                raw_snippet = item.get('raw_text', '')
-                timeline_html += f"""
-                <div class="timeline-item">
-                    <div class="{dot_class}"></div>
-                    <div class="timeline-date-above">{item['pub_date']}</div>
-                    <div class="timeline-card">
-                        <div class="timeline-header">
-                            <span class="timeline-title">{item['media']} · {item['dept']} {item['rank_title']}</span>
-                        </div>
-                        <div>
-                            {badge_html}
-                            <span style="font-size:0.85rem; color:#64748B; margin-left:8px;">출입처 도메인: {item.get('domain', '일반')}</span>
-                        </div>
-                        {link_html}
-                        <div class="timeline-body">
-                            <b>발령 원문:</b> <code>{raw_snippet}</code>
-                        </div>
-                    </div>
-                </div>
-                """
-            timeline_html += '</div>'
-            render_html(timeline_html)
-
-            # 7. 하단 다운로드 액션 바
-            st.markdown("<br>", unsafe_allow_html=True)
+        with col_pdl1:
             st.download_button(
                 "프로필 엑셀 다운로드",
                 data=excel_bytes,
                 file_name=f"{reporter_obj['name']}_커리어_프로필.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key="btn_dl_bottom"
+                key=f"dl_prof_top_{key_suffix}"
+            )
+        with col_pdl2:
+            st.download_button(
+                "발령 연대기 다운로드",
+                data=csv_bytes,
+                file_name=f"{reporter_obj['name']}_발령연대기.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"dl_csv_top_{key_suffix}"
+            )
+
+        current_media = reporter_obj.get("current_media", "")
+        current_dept = reporter_obj.get("current_dept", "")
+        current_rank = reporter_obj.get("current_rank", "")
+        email = reporter_obj.get("email", "")
+
+        # 2. 프로필 요약 카드
+        render_html(f"""
+        <div class="profile-card">
+            <div class="profile-name">
+                <span>{reporter_obj['name']}</span>
+                <span class="badge badge-transfer">{current_media}</span>
+                <span class="badge badge-normal">{current_dept}</span>
+                <span class="badge badge-promotion">{current_rank}</span>
+                <span class="badge badge-career">총 {metrics.get('career_years', 1)}년차 : {metrics.get('first_year', 1965)}년 ~ {metrics.get('last_year', 2026)}년</span>
+                {'<span class="badge badge-jobchange">이직 ' + str(metrics.get('job_change_count', 0)) + '회</span>' if metrics.get('job_change_count', 0) > 0 else ''}
+            </div>
+            <div class="profile-meta">
+                • <b>고유 식별자:</b> <code>{reporter_obj.get('reporter_id', '')}</code><br>
+                • <b>바이라인 이메일:</b> {f'<a href="mailto:{email}">{email}</a>' if email else '<span style="color:#94A3B8;">미등록</span>'}<br>
+                • <b>활동 추적 기간:</b> {metrics.get('first_date')} ~ {metrics.get('last_date')} : 총 {metrics.get('total_records', len(timeline))}건 발령 및 활동 수집, 승진 {metrics.get('promotion_count', 0)}회, 이직 {metrics.get('job_change_count', 0)}회<br>
+                • <b>주요 출입처 전문분야:</b> <b style="color:#0F172A;">{metrics.get('primary_domain', '일반')}</b>
+            </div>
+        </div>
+        """)
+
+        # 3. 4대 핵심 커리어 KPI 지표 카드
+        kcol1, kcol2, kcol3, kcol4 = st.columns(4)
+        with kcol1:
+            render_html(f"""
+            <div class="metric-card">
+                <div class="metric-label">총 경력 연차</div>
+                <div class="metric-value">{metrics.get('career_years', 1)}년차</div>
+                <div class="metric-sub">{metrics.get('first_year', 1965)}년 ~ {metrics.get('last_year', 2026)}년</div>
+            </div>
+            """)
+        with kcol2:
+            render_html(f"""
+            <div class="metric-card">
+                <div class="metric-label">현재 소속 및 직급</div>
+                <div class="metric-value" style="font-size:1.4rem;">{current_media}</div>
+                <div class="metric-sub" style="color:#475569;">{current_dept} {current_rank}</div>
+            </div>
+            """)
+        with kcol3:
+            render_html(f"""
+            <div class="metric-card">
+                <div class="metric-label">주요 출입처 전문분야</div>
+                <div class="metric-value" style="font-size:1.4rem;">{metrics.get('primary_domain', '일반')}</div>
+                <div class="metric-sub">발령 및 활동 기사 기반</div>
+            </div>
+            """)
+        with kcol4:
+            render_html(f"""
+            <div class="metric-card">
+                <div class="metric-label">매체 간 이직 횟수</div>
+                <div class="metric-value">{metrics.get('job_change_count', 0)}회</div>
+                <div class="metric-sub">총 {len(metrics.get('affiliation_journey', []))}개 언론사 활동</div>
+            </div>
+            """)
+
+        # 4. 소속 매체 이동 로드맵 (이직)
+        render_html('<div class="topic-section-divider"></div>')
+        render_html("""
+        <div class="topic-section-header">
+            <div class="topic-title-wrapper">
+                <span class="topic-accent-bar" style="background-color: #8B5CF6;"></span>
+                <span class="topic-section-title">이직</span>
+                <span class="badge badge-jobchange" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">매체 이동 로드맵</span>
+            </div>
+        </div>
+        """)
+        aff_list = metrics.get("affiliation_journey", [])
+        if aff_list:
+            roadmap_html = '<div class="roadmap-container">'
+            for idx, aff in enumerate(aff_list):
+                roadmap_html += f"""
+                <div class="roadmap-node">
+                    <div class="roadmap-media">{aff['media']}</div>
+                    <div class="roadmap-period">{aff['start_year']}년 ~ {aff['end_year']}년 : {aff['last_dept']} {aff['last_rank']}</div>
+                </div>
+                """
+                if idx < len(aff_list) - 1:
+                    roadmap_html += '<div class="roadmap-arrow">➔</div>'
+            roadmap_html += '</div>'
+            render_html(roadmap_html)
+        else:
+            render_html("""
+            <div class="sub-card-box" style="color: #64748B; font-size: 0.88rem; padding: 16px 20px;">
+                확인된 매체 간 이직 이력이 없습니다. (단일 언론사 재직)
+            </div>
+            """)
+
+        # 5. 직급 성장 (승진) & 출입처 도메인 분석
+        render_html('<div class="topic-section-divider"></div>')
+        render_html("""
+        <div class="topic-section-header">
+            <div class="topic-title-wrapper">
+                <span class="topic-accent-bar" style="background-color: #10B981;"></span>
+                <span class="topic-section-title">승진</span>
+                <span class="badge badge-promotion" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">직급 승진 사다리 및 전문 분야</span>
+            </div>
+        </div>
+        """)
+        l_col, d_col = st.columns([1.2, 1])
+        with l_col:
+            l_items = metrics.get("promotion_ladder", [])
+            if l_items:
+                ladder_html = '<div class="sub-card-box">'
+                ladder_html += '<div class="sub-card-title">직급 성장 사다리</div>'
+                ladder_html += '<div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px;">'
+                for idx, l in enumerate(l_items):
+                    ladder_html += f"""
+                    <div style="background:#FFFFFF; border:1px solid #CBD5E1; border-radius:8px; padding:6px 12px; font-size:0.85rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
+                        <b style="color:#0F172A;">{l['rank_title']}</b> <span style="color:#64748B; margin-left:4px;">{l['year']}년 {l['media']}</span>
+                    </div>
+                    """
+                    if idx < len(l_items) - 1:
+                        ladder_html += '<span style="color:#94A3B8; font-weight:700;">➔</span>'
+                ladder_html += '</div></div>'
+                render_html(ladder_html)
+            else:
+                render_html("""
+                <div class="sub-card-box">
+                    <div class="sub-card-title">직급 성장 사다리</div>
+                    <div style="color:#64748B; font-size:0.88rem;">단일 직급 활동 기록이 확인되었습니다.</div>
+                </div>
+                """)
+
+        with d_col:
+            d_breakdown = metrics.get("domain_breakdown", [])
+            if d_breakdown:
+                d_html = '<div class="sub-card-box">'
+                d_html += '<div class="sub-card-title">출입처 도메인 전문성</div>'
+                d_html += '<div style="display:flex; flex-wrap:wrap; gap:6px;">'
+                for db_item in d_breakdown[:4]:
+                    d_html += f"""
+                    <span class="badge badge-normal" style="padding:6px 10px; font-size:0.8rem; border:1px solid #CBD5E1;">
+                        <b style="color:#0F172A;">{db_item['domain']}</b> <span style="color:#2563EB; font-weight:700;">{db_item['percentage']}%</span> <span style="color:#64748B;">({db_item['count']}건)</span>
+                    </span>
+                    """
+                d_html += '</div></div>'
+                render_html(d_html)
+            else:
+                render_html("""
+                <div class="sub-card-box">
+                    <div class="sub-card-title">출입처 도메인 전문성</div>
+                    <div style="color:#64748B; font-size:0.88rem;">출입처 분석 데이터가 충분하지 않습니다.</div>
+                </div>
+                """)
+
+        # 6. 연대기 타임라인
+        render_html('<div class="topic-section-divider"></div>')
+        render_html("""
+        <div class="topic-section-header">
+            <div class="topic-title-wrapper">
+                <span class="topic-accent-bar" style="background-color: #0284C7;"></span>
+                <span class="topic-section-title">타임라인</span>
+                <span class="badge badge-normal" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">발령 연대기</span>
+            </div>
+        </div>
+        """)
+        st.caption("기사 원문 링크를 클릭하면 해당 시점의 실제 뉴스 기사 웹페이지로 이동합니다.")
+
+        timeline_desc = sorted(
+            timeline,
+            key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10],
+            reverse=True
+        )
+        timeline_html = '<div class="timeline-container">'
+        for item in timeline_desc:
+            action = item.get("action_type", "발령")
+            is_job_change = "이직" in action
+            dot_class = "timeline-dot timeline-dot-jobchange" if is_job_change else "timeline-dot"
+
+            if is_job_change:
+                badge_html = f'<span class="badge badge-jobchange">{action}</span>'
+            elif "승진" in action:
+                badge_html = f'<span class="badge badge-promotion">{action}</span>'
+            elif "전보" in action or "보직" in action:
+                badge_html = f'<span class="badge badge-transfer">{action}</span>'
+            else:
+                badge_html = f'<span class="badge badge-normal">{action}</span>'
+
+            art_url = item.get("article_url", "")
+            art_title = item.get("article_title", "")
+            if art_url:
+                link_html = f'<div style="margin-top:6px;"><a href="{art_url}" target="_blank" style="font-size:0.85rem; font-weight:600; color:#2563EB; text-decoration:underline;">기사 원문: {art_title or "온라인 기사 보기"}</a></div>'
+            elif art_title:
+                link_html = f'<div style="margin-top:6px; font-size:0.85rem; color:#475569;">기사 제목: <b>{art_title}</b></div>'
+            else:
+                link_html = ''
+
+            raw_snippet = item.get('raw_text', '')
+            timeline_html += f"""
+            <div class="timeline-item">
+                <div class="{dot_class}"></div>
+                <div class="timeline-date-above">{item['pub_date']}</div>
+                <div class="timeline-card">
+                    <div class="timeline-header">
+                        <span class="timeline-title">{item['media']} · {item['dept']} {item['rank_title']}</span>
+                    </div>
+                    <div>
+                        {badge_html}
+                        <span style="font-size:0.85rem; color:#64748B; margin-left:8px;">출입처 도메인: {item.get('domain', '일반')}</span>
+                    </div>
+                    {link_html}
+                    <div class="timeline-body">
+                        <b>발령 원문:</b> <code>{raw_snippet}</code>
+                    </div>
+                </div>
+            </div>
+            """
+        timeline_html += '</div>'
+        render_html(timeline_html)
+
+        # 7. 하단 다운로드 액션 바
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.download_button(
+            "프로필 엑셀 다운로드",
+            data=excel_bytes,
+            file_name=f"{reporter_obj['name']}_커리어_프로필.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"btn_dl_bottom_{key_suffix}"
+        )
+
+    # 등록된 언론인 목록 / 인물 선택 및 인사 발령 명단 표시
+    if active_name:
+        if search_mode == "매체·이름 검색" and st.session_state.get("filter_mn_media_val", ""):
+            matched_reporters = [r for r in filtered_reporters if active_name in r["name"]]
+        else:
+            matched_reporters = [r for r in filtered_reporters if active_name in r["name"]] if filtered_reporters else [r for r in all_reporters if active_name in r["name"]]
+        
+        if matched_reporters:
+            matched_reporters.sort(key=lambda x: (x.get("name", "") == active_name, str(x.get("last_seen", ""))), reverse=True)
+            
+            if len(matched_reporters) > 1:
+                # [복수 언론인 발견 시] 모든 언론인을 다 보여주기: 전체 명단 테이블 + 개별 탭
+                render_html(f"""
+                <div class="topic-section-divider"></div>
+                <div class="topic-section-header">
+                    <div class="topic-title-wrapper">
+                        <span class="topic-accent-bar" style="background-color: #2563EB;"></span>
+                        <span class="topic-section-title">검색된 언론인 전체 명단</span>
+                        <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">동명이인/소속별 총 {len(matched_reporters)}명</span>
+                    </div>
+                </div>
+                """)
+                st.caption(f"'{active_name}' 검색 조건에 부합하는 모든 언론인({len(matched_reporters)}명)입니다. 여러 명의 기록이 모두 확인되었으므로, 아래 전체 비교 명단과 개별 탭을 통해 전원의 커리어 프로필과 발령 연대기를 모두 확인하실 수 있습니다.")
+
+                df_all_matched = pd.DataFrame([{
+                    "성명": r.get("name", ""),
+                    "현재/최근 소속": normalize_media_name(r.get("current_media", "")),
+                    "부서": r.get("current_dept", ""),
+                    "직급": r.get("current_rank", ""),
+                    "활동 추적 기간": f"{str(r.get('first_seen', ''))[:7]} ~ {str(r.get('last_seen', ''))[:7]}" if r.get('first_seen') else "",
+                    "발령 기록": f"{r.get('record_count', 0)}건",
+                    "식별자": r.get("reporter_id", "")
+                } for r in matched_reporters])
+                st.dataframe(df_all_matched, use_container_width=True, hide_index=True)
+
+                # 발령 원문 테이블이 있는 경우 함께 표시
+                if matched_records:
+                    unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
+                    unique_matched = [r for r in unique_matched if not is_excluded_department(r.get("dept", ""))]
+                    if unique_matched:
+                        render_html(f"""
+                        <div class="topic-section-divider"></div>
+                        <div class="topic-section-header">
+                            <div class="topic-title-wrapper">
+                                <span class="topic-accent-bar" style="background-color: #0284C7;"></span>
+                                <span class="topic-section-title">{active_name} 관련 기사 발령 내역</span>
+                                <span class="badge badge-normal" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">총 {len(unique_matched)}건</span>
+                            </div>
+                        </div>
+                        """)
+                        df_display = pd.DataFrame([{
+                            "발령일자": r.get("pub_date", ""),
+                            "언론사": normalize_media_name(r.get("media", "")),
+                            "발령구분": r.get("action_type", "발령"),
+                            "부서": r.get("dept", ""),
+                            "직급": r.get("rank_title", ""),
+                            "성명": r.get("name", ""),
+                            "기사원문(링크주소)": r.get("article_url", "")
+                        } for r in unique_matched[:500]])
+                        st.dataframe(
+                            df_display,
+                            column_config={
+                                "발령일자": st.column_config.TextColumn("발령일자", alignment="center"),
+                                "언론사": st.column_config.TextColumn("언론사", alignment="center"),
+                                "발령구분": st.column_config.TextColumn("발령구분", alignment="center"),
+                                "부서": st.column_config.TextColumn("부서", alignment="center"),
+                                "직급": st.column_config.TextColumn("직급", alignment="center"),
+                                "성명": st.column_config.TextColumn("성명", alignment="center"),
+                                "기사원문(링크주소)": st.column_config.LinkColumn(
+                                    "기사원문(링크주소)",
+                                    alignment="center",
+                                    help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
+                                    validate=r"^https?://.*",
+                                    max_chars=60,
+                                    display_text="기사 원문 열기"
+                                )
+                            },
+                            use_container_width=True, 
+                            hide_index=True
+                        )
+
+                # 복수 언론인 전원의 개별 프로필 및 타임라인 탭 렌더링
+                render_html('<div class="topic-section-divider"></div>')
+                tab_titles = [
+                    f"{r['name']} ({normalize_media_name(r.get('current_media', ''))} · {r.get('current_dept', '') or '부서 미표기'})"
+                    for r in matched_reporters
+                ]
+                reporter_tabs = st.tabs(tab_titles)
+                for idx, r_tab in enumerate(reporter_tabs):
+                    with r_tab:
+                        rep_item = matched_reporters[idx]
+                        timeline_item = db.get_reporter_timeline(rep_item["reporter_id"])
+                        render_single_reporter_profile(rep_item, timeline_item, db, key_suffix=f"matched_{idx}")
+
+            else:
+                # [단일 언론인 발견 시] '선택된 언론인' 대신 단일 인물임을 명확히 안내
+                rep_single = matched_reporters[0]
+                render_html(f"""
+                <div class="topic-section-divider"></div>
+                <div class="topic-section-header">
+                    <div class="topic-title-wrapper">
+                        <span class="topic-accent-bar" style="background-color: #2563EB;"></span>
+                        <span class="topic-section-title">검색된 언론인 프로필</span>
+                        <span class="badge badge-normal" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">단일 인물 · 1명</span>
+                    </div>
+                </div>
+                """)
+                st.caption(f"검색된 언론인: **{rep_single['display_label']}** (해당 검색 조건으로 등록된 유일한 언론인입니다)")
+
+                if matched_records:
+                    unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
+                    unique_matched = [r for r in unique_matched if not is_excluded_department(r.get("dept", ""))]
+                    if unique_matched:
+                        df_display = pd.DataFrame([{
+                            "발령일자": r.get("pub_date", ""),
+                            "언론사": normalize_media_name(r.get("media", "")),
+                            "발령구분": r.get("action_type", "발령"),
+                            "부서": r.get("dept", ""),
+                            "직급": r.get("rank_title", ""),
+                            "성명": r.get("name", ""),
+                            "기사원문(링크주소)": r.get("article_url", "")
+                        } for r in unique_matched[:500]])
+                        st.dataframe(
+                            df_display,
+                            column_config={
+                                "발령일자": st.column_config.TextColumn("발령일자", alignment="center"),
+                                "언론사": st.column_config.TextColumn("언론사", alignment="center"),
+                                "발령구분": st.column_config.TextColumn("발령구분", alignment="center"),
+                                "부서": st.column_config.TextColumn("부서", alignment="center"),
+                                "직급": st.column_config.TextColumn("직급", alignment="center"),
+                                "성명": st.column_config.TextColumn("성명", alignment="center"),
+                                "기사원문(링크주소)": st.column_config.LinkColumn(
+                                    "기사원문(링크주소)",
+                                    alignment="center",
+                                    help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
+                                    validate=r"^https?://.*",
+                                    max_chars=60,
+                                    display_text="기사 원문 열기"
+                                )
+                            },
+                            use_container_width=True, 
+                            hide_index=True
+                        )
+
+                timeline_single = db.get_reporter_timeline(rep_single["reporter_id"])
+                render_single_reporter_profile(rep_single, timeline_single, db, key_suffix="single_0")
+
+        else:
+            if search_mode == "매체·이름 검색" and st.session_state.get("filter_mn_media_val", ""):
+                m_filter = st.session_state.get("filter_mn_media_val", "")
+                other_reps = [r for r in db.search_reporters(name=active_name) if not is_media_organization(r["name"]) and not is_excluded_department(r.get("current_dept", ""))]
+                if other_reps:
+                    other_medias = list(dict.fromkeys([r.get("current_media", "") for r in other_reps if r.get("current_media")]))
+                    st.info(f"'{m_filter}' 소속의 '{active_name}' 기자 발령 기록은 확인되지 않았으나, 타 매체({', '.join(other_medias)}) 소속 기록({len(other_reps)}명)이 확인되어 안내합니다.")
+
+                    render_html(f"""
+                    <div class="topic-section-divider"></div>
+                    <div class="topic-section-header">
+                        <div class="topic-title-wrapper">
+                            <span class="topic-accent-bar" style="background-color: #F59E0B;"></span>
+                            <span class="topic-section-title">타 매체 소속 '{active_name}' 언론인 명단</span>
+                            <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">총 {len(other_reps)}명</span>
+                        </div>
+                    </div>
+                    """)
+                    df_other = pd.DataFrame([{
+                        "성명": r.get("name", ""),
+                        "소속 언론사": normalize_media_name(r.get("current_media", "")),
+                        "부서": r.get("current_dept", ""),
+                        "직급": r.get("current_rank", ""),
+                        "활동 추적 기간": f"{str(r.get('first_seen', ''))[:7]} ~ {str(r.get('last_seen', ''))[:7]}" if r.get('first_seen') else "",
+                        "발령 기록": f"{r.get('record_count', 0)}건"
+                    } for r in other_reps])
+                    st.dataframe(df_other, use_container_width=True, hide_index=True)
+
+                    if len(other_reps) == 1:
+                        o_rep = other_reps[0]
+                        o_tl = db.get_reporter_timeline(o_rep["reporter_id"])
+                        render_single_reporter_profile(o_rep, o_tl, db, key_suffix="other_0")
+                    else:
+                        o_tabs = st.tabs([f"{r['name']} ({normalize_media_name(r.get('current_media', ''))} · {r.get('current_dept', '') or '부서 미표기'})" for r in other_reps])
+                        for o_idx, o_tab in enumerate(o_tabs):
+                            with o_tab:
+                                o_rep = other_reps[o_idx]
+                                o_tl = db.get_reporter_timeline(o_rep["reporter_id"])
+                                render_single_reporter_profile(o_rep, o_tl, db, key_suffix=f"other_{o_idx}")
+                else:
+                    st.info(f"아카이브 전체 기간 온라인 공식 인사 기사에서 '{m_filter}' 소속 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
+            else:
+                st.info(f"온라인 인사 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
+
+    # 매체·부서 검색 또는 기자 이름 미입력 상태의 매체 검색 처리
+    elif search_mode == "매체·부서 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val") or st.session_state.get("filter_rank_val")):
+        m_val = st.session_state.get("filter_media_val", "")
+        d_val = st.session_state.get("filter_dept_val", "")
+        r_val = st.session_state.get("filter_rank_val", "")
+
+        if not matched_records:
+            target_kw = " ".join(filter(None, [m_val, d_val, r_val]))
+            st.info(f"조건에 부합하는 온라인 인사 발령 기록(아카이브 전체 기간)을 찾지 못했습니다: '{target_kw}'")
+        else:
+            unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
+            unique_matched = [r for r in unique_matched if not is_excluded_department(r.get("dept", ""))]
+
+            if alt_search_note:
+                section_title = f"{m_val} {d_val} 발령 명단 (동일 부서 타 직급 포함)".strip()
+                st.info(alt_search_note)
+            else:
+                title_parts = []
+                if m_val: title_parts.append(m_val)
+                if d_val: title_parts.append(d_val)
+                if r_val: title_parts.append(f"역대 {r_val}")
+                elif not r_val and (m_val or d_val): title_parts.append("역대")
+                title_parts.append("발령 명단")
+                section_title = " ".join(title_parts)
+            badge_title = f"아카이브 전체 기간 · 총 {len(unique_matched)}건"
+
+            render_html(f"""
+            <div class="topic-section-divider"></div>
+            <div class="topic-section-header">
+                <div class="topic-title-wrapper">
+                    <span class="topic-accent-bar" style="background-color: #2563EB;"></span>
+                    <span class="topic-section-title">{section_title}</span>
+                    <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">{badge_title}</span>
+                </div>
+            </div>
+            """)
+
+            df_display = pd.DataFrame([{
+                "발령일자": r.get("pub_date", ""),
+                "언론사": normalize_media_name(r.get("media", "")),
+                "발령구분": r.get("action_type", "발령"),
+                "부서": r.get("dept", ""),
+                "직급": r.get("rank_title", ""),
+                "성명": r.get("name", ""),
+                "기사원문(링크주소)": r.get("article_url", "")
+            } for r in unique_matched[:500]])
+            st.dataframe(
+                df_display,
+                column_config={
+                    "발령일자": st.column_config.TextColumn("발령일자", alignment="center"),
+                    "언론사": st.column_config.TextColumn("언론사", alignment="center"),
+                    "발령구분": st.column_config.TextColumn("발령구분", alignment="center"),
+                    "부서": st.column_config.TextColumn("부서", alignment="center"),
+                    "직급": st.column_config.TextColumn("직급", alignment="center"),
+                    "성명": st.column_config.TextColumn("성명", alignment="center"),
+                    "기사원문(링크주소)": st.column_config.LinkColumn(
+                        "기사원문(링크주소)",
+                        alignment="center",
+                        help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
+                        validate=r"^https?://.*",
+                        max_chars=60,
+                        display_text="기사 원문 열기"
+                    )
+                },
+                use_container_width=True, 
+                hide_index=True
+            )
+
+            # 해당 부서 등록 언론인 전체 명단 및 프로필 상세 조회
+            if filtered_reporters:
+                filtered_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
+                kw_tag = r_val or d_val or m_val
+                
+                render_html(f"""
+                <div class="topic-section-divider"></div>
+                <div class="topic-section-header">
+                    <div class="topic-title-wrapper">
+                        <span class="topic-accent-bar" style="background-color: #4F46E5;"></span>
+                        <span class="topic-section-title">소속 언론인 전체 명단</span>
+                        <span class="badge badge-normal" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">총 {len(filtered_reporters)}명</span>
+                    </div>
+                </div>
+                """)
+
+                df_dept_reps = pd.DataFrame([{
+                    "성명": r.get("name", ""),
+                    "소속 언론사": normalize_media_name(r.get("current_media", "")),
+                    "부서": r.get("current_dept", ""),
+                    "직급": r.get("current_rank", ""),
+                    "활동 추적 기간": f"{str(r.get('first_seen', ''))[:7]} ~ {str(r.get('last_seen', ''))[:7]}" if r.get('first_seen') else "",
+                    "발령 기록": f"{r.get('record_count', 0)}건"
+                } for r in filtered_reporters])
+                st.dataframe(df_dept_reps, use_container_width=True, hide_index=True)
+
+                if len(filtered_reporters) > 1:
+                    options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
+                    selected_label = st.selectbox(
+                        f"인물 상세 프로필 조회 (총 {len(filtered_reporters)}명 중 선택)",
+                        options=list(options_dict.keys()),
+                        key="sb_matched_reporters_dropdown"
+                    )
+                    sel_rep_id = options_dict[selected_label]
+                    sel_rep = next((r for r in filtered_reporters if r["reporter_id"] == sel_rep_id), None) or db.get_reporter(sel_rep_id)
+                    render_single_reporter_profile(sel_rep, db.get_reporter_timeline(sel_rep_id), db, key_suffix="dept_sel")
+                elif len(filtered_reporters) == 1:
+                    rep_only = filtered_reporters[0]
+                    render_single_reporter_profile(rep_only, db.get_reporter_timeline(rep_only["reporter_id"]), db, key_suffix="dept_single")
+
+    elif search_mode == "매체·이름 검색" and (st.session_state.get("filter_mn_media_val") or st.session_state.get("filter_mn_name_val")):
+        if not matched_records:
+            st.info("조건에 부합하는 온라인 인사 발령 기록(아카이브 전체 기간)을 찾지 못했습니다.")
+        else:
+            unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
+            unique_matched = [r for r in unique_matched if not is_excluded_department(r.get("dept", ""))]
+            mn_m = st.session_state.get("filter_mn_media_val", "")
+            mn_n = st.session_state.get("filter_mn_name_val", "")
+            mn_label = " ".join(filter(None, [mn_m, mn_n]))
+            section_title = f"{mn_label} 발령 내역" if mn_label else "인사 소식"
+            badge_title = f"아카이브 전체 기간 · 총 {len(unique_matched)}건"
+
+            render_html(f"""
+            <div class="topic-section-divider"></div>
+            <div class="topic-section-header">
+                <div class="topic-title-wrapper">
+                    <span class="topic-accent-bar" style="background-color: #2563EB;"></span>
+                    <span class="topic-section-title">{section_title}</span>
+                    <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">{badge_title}</span>
+                </div>
+            </div>
+            """)
+
+            df_display = pd.DataFrame([{
+                "발령일자": r.get("pub_date", ""),
+                "언론사": normalize_media_name(r.get("media", "")),
+                "발령구분": r.get("action_type", "발령"),
+                "부서": r.get("dept", ""),
+                "직급": r.get("rank_title", ""),
+                "성명": r.get("name", ""),
+                "기사원문(링크주소)": r.get("article_url", "")
+            } for r in unique_matched[:500]])
+            st.dataframe(
+                df_display,
+                column_config={
+                    "발령일자": st.column_config.TextColumn("발령일자", alignment="center"),
+                    "언론사": st.column_config.TextColumn("언론사", alignment="center"),
+                    "발령구분": st.column_config.TextColumn("발령구분", alignment="center"),
+                    "부서": st.column_config.TextColumn("부서", alignment="center"),
+                    "직급": st.column_config.TextColumn("직급", alignment="center"),
+                    "성명": st.column_config.TextColumn("성명", alignment="center"),
+                    "기사원문(링크주소)": st.column_config.LinkColumn(
+                        "기사원문(링크주소)",
+                        alignment="center",
+                        help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
+                        validate=r"^https?://.*",
+                        max_chars=60,
+                        display_text="기사 원문 열기"
+                    )
+                },
+                use_container_width=True, 
+                hide_index=True
             )
 
 
