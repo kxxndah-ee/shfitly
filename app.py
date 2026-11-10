@@ -956,7 +956,7 @@ with tab_search:
                     other_medias = list(dict.fromkeys([r.get("current_media", "") for r in other_reps if r.get("current_media")]))
                     st.info(f"'{m_filter}' 소속의 '{active_name}' 기자 발령 기록은 확인되지 않았으나, 타 매체({', '.join(other_medias)}) 소속 기록({len(other_reps)}명)이 확인되었습니다.")
                 else:
-                    st.info(f"최근 40개년 온라인 공식 인사 기사에서 '{m_filter}' 소속 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
+                    st.info(f"아카이브 전체 기간 온라인 공식 인사 기사에서 '{m_filter}' 소속 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
             else:
                 st.info(f"온라인 인사 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
     elif filtered_reporters and search_mode == "이름 검색":
@@ -974,10 +974,10 @@ with tab_search:
     elif search_mode == "매체·부서 검색" and (st.session_state.get("filter_media_val") or st.session_state.get("filter_dept_val") or st.session_state.get("filter_rank_val")):
         if not matched_records:
             target_kw = " ".join(filter(None, [st.session_state.get("filter_media_val"), st.session_state.get("filter_dept_val"), st.session_state.get("filter_rank_val")]))
-            st.info(f"조건에 부합하는 최근 40개년 온라인 인사 발령 기록을 찾지 못했습니다: '{target_kw}'")
+            st.info(f"조건에 부합하는 온라인 인사 발령 기록(아카이브 전체 기간)을 찾지 못했습니다: '{target_kw}'")
     elif search_mode == "매체·이름 검색" and (st.session_state.get("filter_mn_media_val") or st.session_state.get("filter_mn_name_val")):
         if not matched_records:
-            st.info("조건에 부합하는 최근 40개년 온라인 인사 발령 기록을 찾지 못했습니다.")
+            st.info("조건에 부합하는 온라인 인사 발령 기록(아카이브 전체 기간)을 찾지 못했습니다.")
 
     # 발령 명단 테이블 표시 (역대 부장/차장 리스트업 및 실시간 발령 명단)
     if matched_records:
@@ -1004,16 +1004,16 @@ with tab_search:
                     title_parts.append("역대")
                 title_parts.append("발령 명단")
                 section_title = " ".join(title_parts)
-            badge_title = f"최근 40개년(1986~2026) · 총 {len(unique_matched)}건"
+            badge_title = f"아카이브 전체 기간 · 총 {len(unique_matched)}건"
         elif search_mode == "매체·이름 검색":
             mn_m = st.session_state.get("filter_mn_media_val", "")
             mn_n = st.session_state.get("filter_mn_name_val", "")
             mn_label = " ".join(filter(None, [mn_m, mn_n]))
             section_title = f"{mn_label} 발령 내역" if mn_label else "인사 소식"
-            badge_title = f"최근 40개년(1986~2026) · 총 {len(unique_matched)}건"
+            badge_title = f"아카이브 전체 기간 · 총 {len(unique_matched)}건"
         else:
             section_title = "인사 소식"
-            badge_title = f"최근 40개년(1986~2026) 실시간 발령 명단 · 총 {len(unique_matched)}건"
+            badge_title = f"아카이브 전체 기간 실시간 발령 명단 · 총 {len(unique_matched)}건"
 
         if alt_search_note:
             st.info(alt_search_note)
@@ -1134,7 +1134,7 @@ with tab_search:
                     <span class="badge badge-transfer">{current_media}</span>
                     <span class="badge badge-normal">{current_dept}</span>
                     <span class="badge badge-promotion">{current_rank}</span>
-                    <span class="badge badge-career">총 {metrics.get('career_years', 1)}년차 : {metrics.get('first_year', 1986)}년 ~ {metrics.get('last_year', 2026)}년</span>
+                    <span class="badge badge-career">총 {metrics.get('career_years', 1)}년차 : {metrics.get('first_year', 1965)}년 ~ {metrics.get('last_year', 2026)}년</span>
                     {'<span class="badge badge-jobchange">이직 ' + str(metrics.get('job_change_count', 0)) + '회</span>' if metrics.get('job_change_count', 0) > 0 else ''}
                 </div>
                 <div class="profile-meta">
@@ -1153,7 +1153,7 @@ with tab_search:
                 <div class="metric-card">
                     <div class="metric-label">총 경력 연차</div>
                     <div class="metric-value">{metrics.get('career_years', 1)}년차</div>
-                    <div class="metric-sub">{metrics.get('first_year', 1986)}년 ~ {metrics.get('last_year', 2026)}년</div>
+                    <div class="metric-sub">{metrics.get('first_year', 1965)}년 ~ {metrics.get('last_year', 2026)}년</div>
                 </div>
                 """)
             with kcol2:

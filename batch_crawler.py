@@ -44,8 +44,8 @@ def load_checkpoint() -> dict:
                 return json.load(f)
         except Exception:
             pass
-    # 기본값: 40년 전(1986년)부터 시작
-    return {"last_year": 1986, "last_month": 1, "completed": False}
+    # 기본값: 아카이브 전체 기간(1965년)부터 시작
+    return {"last_year": 1965, "last_month": 1, "completed": False}
 
 def save_checkpoint(year: int, month: int):
     with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
@@ -245,7 +245,7 @@ def run_batch_crawler():
     conn = sqlite3.connect(DB_NAME)
 
     print(f"=====================================================")
-    print(f" 언론사 인사 기사 40년 전수 배치 크롤러 가동")
+    print(f" 언론사 인사 기사 아카이브 전수 배치 크롤러 가동")
     print(f" 대상: 연합뉴스(001), 뉴스1(421) | 기간: {start_year}년 {start_month}월 ~ {current_year}년 {current_month}월")
     print(f" 체크포인트: {CHECKPOINT_FILE}")
     print(f"=====================================================\n")
@@ -256,7 +256,7 @@ def run_batch_crawler():
             month_begin = start_month if year == start_year else 1
 
             for month in range(month_begin, month_limit + 1):
-                print(f"\n▶ [{year}년 {month:02d}월] 배치 수집 시작...")
+                print(f"\n[{year}년 {month:02d}월] 배치 수집 시작...")
                 month_total = 0
 
                 for media_source, press_code in MEDIA_TARGETS.items():
@@ -267,7 +267,7 @@ def run_batch_crawler():
                     saved = crawl_month_batch(conn, media_source, press_code, year, month)
                     month_total += saved
 
-                print(f"▶ [{year}년 {month:02d}월] 완료: 총 {month_total}건 저장됨.")
+                print(f"[{year}년 {month:02d}월] 완료: 총 {month_total}건 저장됨.")
                 save_checkpoint(year, month)
 
                 # 월 단위 완료 시 휴식
@@ -276,7 +276,7 @@ def run_batch_crawler():
         # 전체 완료 시 플래그 갱신
         with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
             json.dump({"last_year": current_year, "last_month": current_month, "completed": True}, f)
-        print("\n최근 40년 치 전수 수집 배치가 모두 성공적으로 완료되었습니다.")
+        print("\n아카이브 전수 수집 배치가 모두 성공적으로 완료되었습니다.")
 
     except KeyboardInterrupt:
         print("\n[사용자 중단] 진행 상황이 체크포인트 파일에 저장되었습니다. 다시 실행하면 이어서 수집합니다.")

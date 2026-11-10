@@ -104,8 +104,15 @@ class MediaPersonnelEngine:
         conn.close()
 
     def _get_40_years_cutoff(self) -> str:
-        """현재 시점(2026년 기준)으로부터 40년 전 일자 반환 (1986-XX-XX)"""
+        """하위 호환용 40년 전 일자 반환"""
         cutoff = datetime.now() - timedelta(days=40 * 365.25)
+        return cutoff.strftime("%Y-%m-%d")
+
+    def _get_archive_cutoff(self, years_back: Optional[int] = None) -> Optional[str]:
+        """지정된 기간(년) 이전 일자 반환. None일 경우 아카이브 전체 기간(제한 없음)"""
+        if years_back is None:
+            return None
+        cutoff = datetime.now() - timedelta(days=years_back * 365.25)
         return cutoff.strftime("%Y-%m-%d")
 
     # -------------------------------------------------------------
@@ -116,15 +123,14 @@ class MediaPersonnelEngine:
         company: str,
         department: Optional[str] = None,
         position: Optional[str] = None,
-        years_back: int = 40
+        years_back: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         연합뉴스/뉴스1/중앙일보 [인사] 기사 중 특정 언론사 + 부서(+직급)에 발령받은 기자 명단 조회
+        (years_back이 None일 경우 아카이브 전체 기간 대상)
         """
         conn = self._get_connection()
         cur = conn.cursor()
-
-        cutoff_date = (datetime.now() - timedelta(days=years_back * 365.25)).strftime("%Y-%m-%d")
 
         query = """
         SELECT 
@@ -138,9 +144,13 @@ class MediaPersonnelEngine:
             title
         FROM v_media_only_events
         WHERE company_name LIKE ?
-          AND event_date >= ?
         """
-        params = [f"%{company.strip()}%", cutoff_date]
+        params = [f"%{company.strip()}%"]
+
+        if years_back is not None:
+            cutoff_date = (datetime.now() - timedelta(days=years_back * 365.25)).strftime("%Y-%m-%d")
+            query += " AND event_date >= ?"
+            params.append(cutoff_date)
 
         if department and department.strip():
             query += " AND department_raw LIKE ?"
@@ -177,15 +187,15 @@ class MediaPersonnelEngine:
         self,
         company: str,
         name: str,
-        years_back: int = 40
+        years_back: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        연합뉴스/뉴스1 [인사] 기사 중 특정 언론사에서 해당 인물이 거친 40년간의 인사 기록 및 타사 이직 연결
+        연합뉴스/뉴스1/중앙일보 [인사] 기사 중 특정 언론사에서 해당 인물이 거친 아카이브 전 기간의 인사 기록 및 타사 이직 연결
+        (years_back이 None일 경우 아카이브 전체 기간 대상)
         """
         conn = self._get_connection()
         cur = conn.cursor()
 
-        cutoff_date = (datetime.now() - timedelta(days=years_back * 365.25)).strftime("%Y-%m-%d")
         company_clean = company.strip()
         name_clean = name.strip()
 
@@ -203,23 +213,30 @@ class MediaPersonnelEngine:
         FROM v_media_only_events
         WHERE company_name LIKE ?
           AND person_name = ?
-          AND event_date >= ?
-        ORDER BY event_date ASC
         """
-        cur.execute(query_events, (f"%{company_clean}%", name_clean, cutoff_date))
+        params_events = [f"%{company_clean}%", name_clean]
+
+        if years_back is not None:
+            cutoff_date = (datetime.now() - timedelta(days=years_back * 365.25)).strftime("%Y-%m-%d")
+            query_events += " AND event_date >= ?"
+            params_events.append(cutoff_date)
+
+        query_events += " ORDER BY event_date ASC"
+        cur.execute(query_events, params_events)
         rows = cur.fetchall()
 
         if not rows:
             conn.close()
+            time_label = f"최근 {years_back}년간" if years_back is not None else "아카이브 전체 기간 중"
             return {
                 "found": False,
                 "company": company_clean,
                 "name": name_clean,
-                "message": f"최근 {years_back}년간 연합뉴스·뉴스1·중앙일보 [인사] 기사 중 [{company_clean}] 소속 '{name_clean}' 기자의 인사 기록이 없습니다."
+                "message": f"{time_label} 연합뉴스·뉴스1·중앙일보 [인사] 기사 중 [{company_clean}] 소속 '{name_clean}' 기자의 인사 기록이 없습니다."
             }
 
         # 2) 타 언론사 이직 내역 연계 (연합/뉴스1/중앙일보 출처 기반 판정 데이터만)
-        cur.execute("""
+        turnover_query = """
         SELECT 
             t.from_company,
             t.to_company,
@@ -231,9 +248,14 @@ class MediaPersonnelEngine:
         JOIN person_profiles p ON t.person_id = p.person_id
         WHERE p.name = ?
           AND (t.from_company LIKE ? OR t.to_company LIKE ?)
-          AND t.turnover_date >= ?
-        ORDER BY t.turnover_date ASC
-        """, (name_clean, f"%{company_clean}%", f"%{company_clean}%", cutoff_date))
+        """
+        turnover_params = [name_clean, f"%{company_clean}%", f"%{company_clean}%"]
+        if years_back is not None:
+            turnover_query += " AND t.turnover_date >= ?"
+            turnover_params.append(cutoff_date)
+
+        turnover_query += " ORDER BY t.turnover_date ASC"
+        cur.execute(turnover_query, turnover_params)
         turnovers = [dict(t) for t in cur.fetchall()]
 
         timeline = []

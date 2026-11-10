@@ -1192,7 +1192,7 @@ class OnlineNewsTracker:
     """
     네이버/다음/구글 뉴스 온라인 기사를 실시간 수집 및 스크래핑하여,
     인사 발령 기사 및 기자 바이라인을 자동 분석하고 DB에 즉시 등록하는 온라인 트래커.
-    최근 40개년(1986~2026)의 포털 기사를 실시간 탐색하여 연대기 커리어 프로필을 구축합니다.
+    연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026)의 포털 기사를 실시간 탐색하여 연대기 커리어 프로필을 구축합니다.
     """
 
     HEADERS = {
@@ -1242,7 +1242,7 @@ class OnlineNewsTracker:
                 if m_iso:
                     return f"{m_iso.group(1)}-{int(m_iso.group(2)):02d}-{int(m_iso.group(3)):02d}"
             t_text = naver_date.get_text(strip=True)
-            m = re.search(r"(199[0-9]|20[0-3][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", t_text)
+            m = re.search(r"(19[6-9][0-9]|20[0-3][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", t_text)
             if m:
                 return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
@@ -1251,25 +1251,25 @@ class OnlineNewsTracker:
             meta = soup.select_one(f"meta[property='{meta_name}'], meta[name='{meta_name}']")
             if meta and meta.get("content"):
                 c = meta["content"]
-                m = re.search(r"(199[0-9]|20[0-3][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", c)
+                m = re.search(r"(19[6-9][0-9]|20[0-3][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", c)
                 if m:
                     return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
         # 4. 언론사 공통 날짜 표시 태그 (.txt_info, .num_date, .info_view, .date)
         for tag in soup.select(".txt_info, .num_date, .info_view, .date, .byline_date, .article_info"):
             text = tag.get_text(strip=True)
-            m = re.search(r"(199[0-9]|20[0-3][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", text)
+            m = re.search(r"(19[6-9][0-9]|20[0-3][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", text)
             if m:
                 return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
         # 5. 본문 시작부 1,200자 내의 정규식 탐색
         if raw_text:
-            m = re.search(r"(199[0-9]|20[0-3][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", raw_text[:1200])
+            m = re.search(r"(19[6-9][0-9]|20[0-3][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", raw_text[:1200])
             if m:
                 return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
         # 6. 일반 URL 경로 내의 날짜 (/2024/05/23/ 등)
-        url_m = re.search(r"/(199[0-9]|20[0-3][0-9])/?(\d{2})/?(\d{2})", url)
+        url_m = re.search(r"/(19[6-9][0-9]|20[0-3][0-9])/?(\d{2})/?(\d{2})", url)
         if url_m:
             return f"{url_m.group(1)}-{url_m.group(2)}-{url_m.group(3)}"
 
@@ -1509,7 +1509,7 @@ class OnlineNewsTracker:
         max_items: int = 25,
         client_id: str = "",
         client_secret: str = "",
-        start_year: int = 1986,
+        start_year: int = 1965,
         end_year: int = 2026,
         sort_first: str = "date"
     ) -> List[Dict[str, Any]]:
@@ -1958,7 +1958,7 @@ class OnlineNewsTracker:
         stop_event: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        특정 기자의 최근 40개년(1986~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
+        특정 기자의 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
         소속 언론사, 직급/부서, 이메일, 연대기 타임라인을 파싱하고 DB에 등록합니다.
         최신 기사 정보를 놓치지 않도록 최근 연도(2024~2026) 구간은 최신순 정렬을 최우선으로 탐색합니다.
         """
@@ -1966,13 +1966,14 @@ class OnlineNewsTracker:
         if not name:
             return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
 
-        # 최근 40개년(1986~2026) 연대기 분할 구간 설정:
+        # 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정:
         intervals = [
             (2024, 2026, "date"),
             (2020, 2023, "date"),
             (2010, 2019, "sim"),
             (1998, 2009, "sim"),
-            (1986, 1997, "sim")
+            (1986, 1997, "sim"),
+            (1965, 1985, "sim")
         ]
 
         # 1단계: 병렬 검색 쿼리 작업 리스트 구성
@@ -2100,7 +2101,7 @@ class OnlineNewsTracker:
         if known_medias and not (stop_event and getattr(stop_event, "is_set", lambda: False)()):
             extra_tasks = []
             for km in list(known_medias):
-                extra_tasks.append((f'{km} "{name}" [인사]', 1986, 2026, "sim"))
+                extra_tasks.append((f'{km} "{name}" [인사]', 1965, 2026, "sim"))
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 extra_futures = [executor.submit(run_search_task, t) for t in extra_tasks]
@@ -2137,7 +2138,7 @@ class OnlineNewsTracker:
                 "found_records": len(all_records),
                 "articles_searched": len(candidate_articles),
                 "unique_reporters": res["unique_reporters"],
-                "message": f"최근 40개년(1986~2026) 연합뉴스·뉴스1·중앙일보 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 초고속 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 초고속 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
             if is_stopped:
@@ -2145,7 +2146,7 @@ class OnlineNewsTracker:
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),
-                "message": f"'{name}' 기자의 최근 40개년(1986~2026) 연합뉴스·뉴스1·중앙일보 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다. (동명이인 공공기관 제외 완료)"
+                "message": f"'{name}' 기자의 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다. (동명이인 공공기관 제외 완료)"
             }
 
     @classmethod
@@ -2159,7 +2160,7 @@ class OnlineNewsTracker:
         stop_event: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        특정 매체명, 부서명, 직급명의 최근 40개년(1986~2026) 온라인 [인사]/<인사> 기사를 실시간 고속 검색하여
+        특정 매체명, 부서명, 직급명의 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사를 실시간 고속 검색하여
         역대 발령 레코드와 언론인 명단을 전수 수집하고 DB에 등록합니다.
         """
         media_clean = media.strip() if media else ""
@@ -2169,13 +2170,14 @@ class OnlineNewsTracker:
         if not media_clean and not dept_clean and not rank_clean:
             return {"found_records": 0, "articles_searched": 0, "message": "매체명, 부서명, 또는 직급명을 입력하세요."}
 
-        # 최근 40개년(1986~2026) 연대기 분할 구간 설정
+        # 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정
         intervals = [
             (2024, 2026, "date"),
             (2020, 2023, "date"),
             (2010, 2019, "sim"),
             (1998, 2009, "sim"),
-            (1986, 1997, "sim")
+            (1986, 1997, "sim"),
+            (1965, 1985, "sim")
         ]
 
         # 검색 쿼리 구성 (언론사 및 뉴스1/연합뉴스/중앙일보 타깃)
@@ -2435,7 +2437,7 @@ class OnlineNewsTracker:
                 "found_records": len(exact_matches),
                 "articles_searched": len(candidate_articles),
                 "unique_reporters": engine_res["unique_reporters"],
-                "message": f"최근 40개년(1986~2026) 연합뉴스·뉴스1·중앙일보 온라인 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{target_label}' 역대 발령 기록 {len(exact_matches)}건(언론인 {engine_res['unique_reporters']}명)을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{target_label}' 역대 발령 기록 {len(exact_matches)}건(언론인 {engine_res['unique_reporters']}명)을 실시간 수집했습니다!{msg_suffix}"
             }
         elif dept_matches:
             sample_names = ", ".join([f"{r['name']}({r.get('rank_title', '')})" for r in dept_matches[:3]])
@@ -2462,7 +2464,7 @@ class OnlineNewsTracker:
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),
-                "message": f"최근 40개년(1986~2026) 연합뉴스·뉴스1·중앙일보 온라인 인사 기사 {len(candidate_articles)}건을 탐색했으나 '{target_label}' 조건의 발령 기록을 찾지 못했습니다."
+                "message": f"연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 온라인 인사 기사 {len(candidate_articles)}건을 탐색했으나 '{target_label}' 조건의 발령 기록을 찾지 못했습니다."
             }
 
     @classmethod
@@ -2475,7 +2477,7 @@ class OnlineNewsTracker:
         stop_event: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        특정 매체명 및 인물명의 30개년 온라인 [인사]/<인사> 기사를 실시간 검색하여
+        특정 매체명 및 인물명의 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사를 실시간 검색하여
         발령 레코드와 언론인 명단을 수집하고 DB에 등록합니다.
         """
         media_clean = media.strip() if media else ""
@@ -2488,13 +2490,14 @@ class OnlineNewsTracker:
         if not media_clean:
             return cls.track_reporter_online(reporter_name=name_clean, client_id=client_id, client_secret=client_secret, stop_event=stop_event)
 
-        # 최근 40개년(1986~2026) 연대기 분할 구간 설정
+        # 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정
         intervals = [
             (2024, 2026, "date"),
             (2020, 2023, "date"),
             (2010, 2019, "sim"),
             (1998, 2009, "sim"),
-            (1986, 1997, "sim")
+            (1986, 1997, "sim"),
+            (1965, 1985, "sim")
         ]
 
         search_tasks = []
@@ -2641,7 +2644,7 @@ class OnlineNewsTracker:
             for km in list(known_medias):
                 if media_clean and km != media_clean and not (media_clean in MEDIA_GROUP_ALIASES and km in MEDIA_GROUP_ALIASES[media_clean]):
                     continue
-                extra_tasks.append((f'{km} "{name_clean}" [인사]', 1986, 2026, "sim"))
+                extra_tasks.append((f'{km} "{name_clean}" [인사]', 1965, 2026, "sim"))
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 extra_futures = [executor.submit(run_search_task, t) for t in extra_tasks]
@@ -2690,7 +2693,7 @@ class OnlineNewsTracker:
                 "found_records": len(all_records),
                 "articles_searched": len(candidate_articles),
                 "unique_reporters": res["unique_reporters"],
-                "message": f"최근 40개년(1986~2026) 연합뉴스·뉴스1·중앙일보 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 {target_str} 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 {target_str} 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
             if is_stopped:
@@ -2698,7 +2701,7 @@ class OnlineNewsTracker:
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),
-                "message": f"최근 40개년(1986~2026) 연합뉴스·뉴스1·중앙일보 공식 [인사] 기사에서 {target_no_res} 기자의 발령 기록을 찾지 못했습니다."
+                "message": f"연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 공식 [인사] 기사에서 {target_no_res} 기자의 발령 기록을 찾지 못했습니다."
             }
 
     @classmethod
@@ -3530,7 +3533,7 @@ def generate_career_profile_metrics(timeline: List[Dict[str, Any]], reporter_obj
         last_year = int(last_date_str[:4])
         career_years = max(1, last_year - first_year + 1)
     except Exception:
-        first_year = 1986
+        first_year = 1965
         last_year = 2026
         career_years = 1
 
@@ -3649,7 +3652,7 @@ def generate_career_excel(
         df_summary = pd.DataFrame(summary_data)
         df_summary.to_excel(writer, sheet_name="1_커리어_프로필_요약", index=False)
 
-        # Sheet 2: 40개년 발령 및 활동 연대기
+        # Sheet 2: 전체 발령 및 활동 연대기
         timeline_rows = []
         for t in timeline:
             p_date = str(t.get("pub_date", ""))
@@ -3670,7 +3673,7 @@ def generate_career_excel(
         df_timeline = pd.DataFrame(timeline_rows)
         if not df_timeline.empty:
             df_timeline = df_timeline.sort_values(by="발령일자", ascending=True)
-        df_timeline.to_excel(writer, sheet_name="2_40개년_발령_연대기", index=False)
+        df_timeline.to_excel(writer, sheet_name="2_전체_발령_연대기", index=False)
 
         # Sheet 3: 이직 히스토리
         if job_changes:

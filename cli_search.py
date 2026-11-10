@@ -10,7 +10,7 @@ engine = MediaPersonnelEngine()
 
 def run_org_dept_search():
     console.print("\n[bold cyan]1. [언론사 조직] 매체·부서 검색[/bold cyan]")
-    console.print("[dim]※ 출처: 연합뉴스·뉴스1·중앙일보 [인사]/<인사> (최근 40년 전수 데이터)[/dim]")
+    console.print("[dim]※ 출처: 연합뉴스·뉴스1·중앙일보 [인사]/<인사> (아카이브 전체 기간 전수 데이터)[/dim]")
     
     company = Prompt.ask("• 언론사명 (필수)", default="조선일보")
     dept = Prompt.ask("• 부서명 (선택, 엔터 시 전체)", default="")
@@ -51,7 +51,7 @@ def run_org_dept_search():
 
 def run_media_name_search():
     console.print("\n[bold cyan]2. [기자 이력] 매체·이름 검색[/bold cyan]")
-    console.print("[dim]※ 출처: 연합뉴스·뉴스1·중앙일보 [인사]/<인사> (최근 40년 전수 데이터)[/dim]")
+    console.print("[dim]※ 출처: 연합뉴스·뉴스1·중앙일보 [인사]/<인사> (아카이브 전체 기간 전수 데이터)[/dim]")
     
     company = Prompt.ask("• 대상 언론사명 (필수)", default="한국경제")
     name = Prompt.ask("• 기자명 (필수)")
@@ -63,7 +63,7 @@ def run_media_name_search():
         return
 
     console.print(Panel(
-        f"[bold white]{res['name']}[/bold white] 기자 - [bold yellow]{res['company']}[/bold yellow] 인사 발령 기록 (최근 40년: 총 {res['total_records']}건)",
+        f"[bold white]{res['name']}[/bold white] 기자 - [bold yellow]{res['company']}[/bold yellow] 인사 발령 기록 (아카이브 전체 기간: 총 {res['total_records']}건)",
         title="언론사 인사 프로필",
         expand=False
     ))
@@ -97,12 +97,12 @@ def run_media_name_search():
             )
         console.print(to_table)
     else:
-        console.print("[dim]※ 최근 40년 내 타 언론사 간 이직 조건(6개월 내 이동)에 부합하는 이벤트가 없습니다.[/dim]")
+        console.print("[dim]※ 아카이브 전체 기간 내 타 언론사 간 이직 조건(6개월 내 이동)에 부합하는 이벤트가 없습니다.[/dim]")
 
 
 def main():
     while True:
-        console.print("\n[bold green]=== 언론사 인사 트래커 (연합뉴스·뉴스1·중앙일보 / 40년 데이터) ===[/bold green]")
+        console.print("\n[bold green]=== 언론사 인사 트래커 (연합뉴스·뉴스1·중앙일보 / 아카이브 전체 기간 데이터) ===[/bold green]")
         console.print("1. 매체·부서 검색 (직급 필터 포함)")
         console.print("2. 매체·이름 검색 (타임라인 + 이직 추적)")
         console.print("0. 종료")
