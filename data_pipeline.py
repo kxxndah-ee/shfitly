@@ -1330,6 +1330,179 @@ class OnlineNewsTracker:
         return articles
 
     @classmethod
+    def crawl_joongang_personnel_incremental(
+        cls,
+        max_pages: int = 50,
+        db_path: str = "media_tracker.db",
+        secondary_db_path: str = "media_personnel.db",
+        stop_on_existing: bool = True,
+        logger: Optional[Any] = None
+    ) -> Dict[str, Any]:
+        """
+        중앙일보 피플 공식 인사 섹션(https://www.joongang.co.kr/people/personnel)을
+        1페이지부터 최신순으로 탐색하며, 이미 DB에 등록된 기사를 만나는 즉시
+        탐색을 멈추는 증분 수집(Incremental)을 실행합니다.
+        신규 기사의 본문 수집, 인사 발령 파싱 및 클러스터링 DB 동기화를 수행합니다.
+        """
+        db = MediaDatabase(db_path)
+        pages_checked = 0
+        articles_checked = 0
+        new_articles_count = 0
+        new_records_collected: List[Dict[str, Any]] = []
+        stopped_on_existing = False
+        stopped_article_url = None
+        seen_urls_in_run: Set[str] = set()
+
+        def log_msg(msg: str):
+            if logger:
+                logger.info(msg)
+            else:
+                print(msg)
+
+        log_msg("[중앙일보 인사 증분 수집] 시작 (대상: https://www.joongang.co.kr/people/personnel)")
+
+        for page in range(1, max_pages + 1):
+            url = f"https://www.joongang.co.kr/people/personnel?page={page}" if page > 1 else "https://www.joongang.co.kr/people/personnel"
+            try:
+                resp = cls.get_session().get(url, headers=cls.HEADERS, timeout=6.0, verify=False)
+                if resp.status_code != 200:
+                    log_msg(f"[페이지 {page}] HTTP {resp.status_code} 오류로 탐색을 중단합니다.")
+                    break
+            except Exception as e:
+                log_msg(f"[페이지 {page}] 웹 요청 오류 발생: {e}")
+                break
+
+            pages_checked += 1
+            soup = BeautifulSoup(resp.content, "html.parser")
+
+            # 1. 페이지 내 모든 기사 링크 순서대로 추출
+            page_articles: List[Dict[str, str]] = []
+            for a_elem in soup.find_all("a"):
+                href = a_elem.get("href", "")
+                title = html.unescape(a_elem.get_text(strip=True))
+                if not href or "/article/" not in href or not title:
+                    continue
+                full_href = href if href.startswith("http") else f"https://www.joongang.co.kr{href}"
+                if full_href in seen_urls_in_run:
+                    continue
+                seen_urls_in_run.add(full_href)
+                if not is_personnel_article_title(title):
+                    continue
+                page_articles.append({"url": full_href, "title": title})
+
+            if not page_articles:
+                log_msg(f"[페이지 {page}] 기사 목록이 비어있어 수집을 종료합니다.")
+                break
+
+            log_msg(f"[페이지 {page}] 공식 [인사] 기사 {len(page_articles)}건 확인 중...")
+
+            # 2. 기사별 증분 확인 및 파싱
+            for art in page_articles:
+                art_url = art["url"]
+                art_title = art["title"]
+                articles_checked += 1
+
+                # 이미 DB에 등록된 기사인지 확인 (증분 수집의 핵심 탈출 조건)
+                if db.is_article_processed(art_url):
+                    if stop_on_existing:
+                        stopped_on_existing = True
+                        stopped_article_url = art_url
+                        log_msg(f"  -> [기존 기사 감지] 이미 DB에 등록된 기사를 만났습니다: {art_title} ({art_url})")
+                        log_msg("  -> 증분 수집(Incremental) 기준에 따라 이전 기사 탐색을 중단하고 수집을 종료합니다.")
+                        break
+                    else:
+                        continue
+
+                # 신규 기사 처리
+                new_articles_count += 1
+                log_msg(f"  -> [신규 기사 발견] {art_title} ({art_url})")
+
+                fetched = cls.fetch_full_text(art_url)
+                body = fetched.get("text", "")
+                pub_date = fetched.get("pub_date") or str(datetime.date.today())
+                art_media = fetched.get("media", "중앙일보")
+
+                # 기사 메타데이터 영속화 (다음 수집 시 중복 방지)
+                db.record_processed_article(art_url, art_title, pub_date, body, art_media)
+
+                # 본문 발령 데이터 파싱
+                recs = PersonnelRegexParser.parse_article_text(
+                    article_text=body,
+                    default_media="중앙일보",
+                    article_title=art_title,
+                    pub_date=pub_date,
+                    article_url=art_url
+                )
+
+                # 순수 언론사 발령 필터링
+                matched_recs = [
+                    r for r in recs
+                    if is_media_organization(r.get("media", ""))
+                    and not is_excluded_department(r.get("dept", ""))
+                    and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
+                ]
+
+                if matched_recs:
+                    log_msg(f"     * 언론사 발령 {len(matched_recs)}건 파싱 성공: {', '.join(set(r['media'] for r in matched_recs))}")
+                    new_records_collected.extend(matched_recs)
+                else:
+                    log_msg("     * 언론사 발령 없음 (공공기관/일반기업 인사로 판정)")
+
+                # secondary_db (media_personnel.db) 동기화
+                if secondary_db_path:
+                    try:
+                        conn_sec = sqlite3.connect(secondary_db_path)
+                        cur_sec = conn_sec.cursor()
+                        cur_sec.execute("""
+                            INSERT OR REPLACE INTO raw_articles
+                            (article_id, media_source, title, content, publish_date, target_media, is_media_company)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, (art_url, art_media, art_title, body, pub_date, art_media, 1 if matched_recs else 0))
+                        for mr in matched_recs:
+                            cur_sec.execute("""
+                                INSERT INTO career_events
+                                (article_id, person_name, company_name, department_raw, dept_category, position_raw, rank_score, action_type, event_date)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                art_url,
+                                mr.get("name", ""),
+                                mr.get("media", ""),
+                                mr.get("dept", ""),
+                                mr.get("domain", ""),
+                                mr.get("rank_title", ""),
+                                mr.get("rank_level", 2),
+                                mr.get("action_type", "발령"),
+                                mr.get("pub_date", pub_date)
+                            ))
+                        conn_sec.commit()
+                        conn_sec.close()
+                    except Exception:
+                        pass
+
+            if stopped_on_existing:
+                break
+
+        # 3. 신규 언론인 발령 레코드가 존재하면 통합 클러스터링 및 타임라인 갱신
+        engine_res = {"total_records": 0, "unique_reporters": 0, "job_changes_detected": 0}
+        if new_records_collected:
+            engine = PersonnelTrackerEngine(db_path)
+            engine_res = engine.process_records(new_records_collected, append=True)
+            log_msg(f"[클러스터링 갱신 완료] 신규 발령 {len(new_records_collected)}건 누적 반영, 등록 언론인 {engine_res['unique_reporters']}명")
+
+        summary = {
+            "source": "https://www.joongang.co.kr/people/personnel",
+            "pages_checked": pages_checked,
+            "articles_checked": articles_checked,
+            "new_articles_count": new_articles_count,
+            "new_records_count": len(new_records_collected),
+            "stopped_on_existing_article": stopped_on_existing,
+            "stopped_article_url": stopped_article_url,
+            "unique_reporters": engine_res.get("unique_reporters", 0),
+            "job_changes_detected": engine_res.get("job_changes_detected", 0)
+        }
+        return summary
+
+    @classmethod
     def search_online_articles(
         cls, 
         query: str, 
@@ -2807,6 +2980,8 @@ class MediaDatabase:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_records_name ON personnel_records(name)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_records_reporter ON personnel_records(reporter_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_records_media ON personnel_records(media)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_records_article_url ON personnel_records(article_url)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_articles_news_id ON articles(news_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_reporters_name ON reporters(name)")
 
             conn.commit()
@@ -2925,6 +3100,34 @@ class MediaDatabase:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM personnel_records ORDER BY pub_date ASC, id ASC")
             return [dict(row) for row in cursor.fetchall()]
+
+    def is_article_processed(self, url: str) -> bool:
+        """기사가 이미 DB(articles 또는 personnel_records)에 등록되어 있는지 확인합니다."""
+        if not url:
+            return False
+        clean_url = url.strip()
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT 1 FROM articles WHERE news_id = ?
+                UNION
+                SELECT 1 FROM personnel_records WHERE article_url = ?
+                LIMIT 1
+            """, (clean_url, clean_url))
+            return cur.fetchone() is not None
+
+    def record_processed_article(self, url: str, title: str, pub_date: str, content: str = "", media: str = "중앙일보"):
+        """수집/분석이 완료된 기사 메타데이터를 articles 테이블에 영속화합니다."""
+        if not url:
+            return
+        clean_url = url.strip()
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT OR REPLACE INTO articles (news_id, pub_date, media, title, content, byline)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (clean_url, pub_date or "", media or "중앙일보", title or "", content or "", ""))
+            conn.commit()
 
     def get_all_reporters(self) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
