@@ -289,7 +289,8 @@ KNOWN_MEDIA_NAMES: set = {
     "한경", "매경", "서경", "아경", "매일경제", "한국경제", "서울경제", "아시아경제", "헤럴드경제",
     "아시아투데이", "파이낸셜뉴스", "이투데이", "뉴스토마토", "머니s", "블로터", "더벨", "비즈한국",
     "비즈니스워치", "글로벌이코노믹", "신아일보", "아주경제", "브릿지경제", "한국정경신문", "스마트에프엔",
-    "fetv", "뉴스핌", "뉴스웨이", "뉴스포스트", "메트로신문", "에너지경제"
+    "fetv", "뉴스핌", "뉴스웨이", "뉴스포스트", "메트로신문", "에너지경제",
+    "기자협회", "한국기자협회", "기자협회보"
 }
 
 NON_MEDIA_KEYWORDS: List[str] = [
@@ -1192,7 +1193,7 @@ class OnlineNewsTracker:
     """
     네이버/다음/구글 뉴스 온라인 기사를 실시간 수집 및 스크래핑하여,
     인사 발령 기사 및 기자 바이라인을 자동 분석하고 DB에 즉시 등록하는 온라인 트래커.
-    연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026)의 포털 기사를 실시간 탐색하여 연대기 커리어 프로필을 구축합니다.
+    4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026)의 포털 및 전문 기사를 실시간 탐색하여 연대기 커리어 프로필을 구축합니다.
     """
 
     HEADERS = {
@@ -1255,8 +1256,8 @@ class OnlineNewsTracker:
                 if m:
                     return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
-        # 4. 언론사 공통 날짜 표시 태그 (.txt_info, .num_date, .info_view, .date)
-        for tag in soup.select(".txt_info, .num_date, .info_view, .date, .byline_date, .article_info"):
+        # 4. 언론사 공통 날짜 표시 태그 (.txt_info, .num_date, .info_view, .date, .byline)
+        for tag in soup.select(".txt_info, .num_date, .info_view, .date, .byline_date, .article_info, .byline"):
             text = tag.get_text(strip=True)
             m = re.search(r"(19[6-9][0-9]|20[0-3][0-9])[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", text)
             if m:
@@ -1514,8 +1515,8 @@ class OnlineNewsTracker:
         sort_first: str = "date"
     ) -> List[Dict[str, Any]]:
         """
-        연합뉴스, 뉴스1 및 중앙일보(피플 인사탭 포함) 공식 [인사] 기사만을 엄격하게 실시간 수집합니다.
-        (통신사 뉴스1·연합뉴스 및 중앙일보를 통해 보도되는 전 매체 공식 인사 기사 수집 보장)
+        4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 공식 [인사] 기사만을 엄격하게 실시간 수집합니다.
+        (통신사 뉴스1·연합뉴스, 중앙일보 및 한국기자협회를 통해 보도되는 전 매체 공식 인사 기사 수집 보장)
         """
         articles: List[Dict[str, Any]] = []
         seen_urls = set()
@@ -1523,10 +1524,10 @@ class OnlineNewsTracker:
         def is_valid_wire_article(tit: str, u: str, pr: str) -> bool:
             if not is_personnel_article_title(tit):
                 return False
-            # 뉴스1, 연합뉴스, 중앙일보 기사 허용
-            if pr in ["뉴스1", "연합뉴스", "중앙일보"]:
+            # 뉴스1, 연합뉴스, 중앙일보, 한국기자협회 기사 허용
+            if pr in ["뉴스1", "연합뉴스", "중앙일보", "한국기자협회", "기자협회"]:
                 return True
-            if "news1.kr" in u or "yna.co.kr" in u or "joongang.co.kr" in u:
+            if "news1.kr" in u or "yna.co.kr" in u or "joongang.co.kr" in u or "journalist.or.kr" in u:
                 return True
             if not pr and ("v.daum.net/v/" in u or "n.news.naver.com" in u):
                 return True
@@ -1537,17 +1538,18 @@ class OnlineNewsTracker:
         target_keyword = re.sub(r"[\[<【(]?\s*인사\s*[\]>】)]?", "", clean_q).strip()
         is_general_personnel = (len(target_keyword) == 0)
 
-        # 1. 네이버 검색: 뉴스1(421), 연합뉴스(001), 중앙일보(025) 기사 실시간 최우선 수집
-        if any(src in clean_q for src in ["뉴스1", "연합뉴스", "중앙일보"]):
+        # 1. 네이버 검색: 뉴스1(421), 연합뉴스(001), 중앙일보(025), 한국기자협회 기사 실시간 최우선 수집
+        if any(src in clean_q for src in ["뉴스1", "연합뉴스", "중앙일보", "한국기자협회", "기자협회"]):
             wire_queries = [clean_q]
         elif target_keyword:
             wire_queries = [
                 f"{target_keyword} [인사] 뉴스1",
                 f"{target_keyword} [인사] 연합뉴스",
-                f"{target_keyword} [인사] 중앙일보"
+                f"{target_keyword} [인사] 중앙일보",
+                f"{target_keyword} [인사] 기자협회"
             ]
         else:
-            wire_queries = [f"{clean_q} 뉴스1", f"{clean_q} 연합뉴스", f"{clean_q} 중앙일보"]
+            wire_queries = [f"{clean_q} 뉴스1", f"{clean_q} 연합뉴스", f"{clean_q} 중앙일보", f"{clean_q} 기자협회"]
 
         for wq in wire_queries:
             if len(articles) >= max_items:
@@ -1573,7 +1575,7 @@ class OnlineNewsTracker:
                                 raw_tit = re.sub(r"<[^>]+>", "", it.get("title", "")).strip()
                                 raw_tit = raw_tit.replace("&quot;", '"').replace("&amp;", '&').replace("&lt;", '<').replace("&gt;", '>')
                                 target_url = it.get("link", "") or it.get("originallink", "")
-                                p_guess = "뉴스1" if "news1.kr" in target_url else ("연합뉴스" if "yna.co.kr" in target_url else ("중앙일보" if "joongang.co.kr" in target_url else ""))
+                                p_guess = "뉴스1" if "news1.kr" in target_url else ("연합뉴스" if "yna.co.kr" in target_url else ("중앙일보" if "joongang.co.kr" in target_url else ("한국기자협회" if "journalist.or.kr" in target_url else "")))
                                 if not p_guess:
                                     if "뉴스1" in wq:
                                         p_guess = "뉴스1"
@@ -1581,6 +1583,8 @@ class OnlineNewsTracker:
                                         p_guess = "연합뉴스"
                                     elif "중앙일보" in wq:
                                         p_guess = "중앙일보"
+                                    elif "기자협회" in wq:
+                                        p_guess = "한국기자협회"
 
                                 if target_url and target_url not in seen_urls and is_valid_wire_article(raw_tit, target_url, p_guess):
                                     seen_urls.add(target_url)
@@ -1625,6 +1629,8 @@ class OnlineNewsTracker:
                             press_name = "연합뉴스"
                         elif "article/025/" in href or "joongang.co.kr" in href or "중앙일보" in title:
                             press_name = "중앙일보"
+                        elif "journalist.or.kr" in href or "기자협회" in title:
+                            press_name = "한국기자협회"
 
                         if press_name and is_valid_wire_article(title, href, press_name):
                             seen_urls.add(href)
@@ -1639,7 +1645,7 @@ class OnlineNewsTracker:
             except Exception as e:
                 pass
 
-        # 2. 다음 뉴스 검색 (뉴스1, 연합뉴스, 중앙일보 기사 엄격 필터링)
+        # 2. 다음 뉴스 검색 (뉴스1, 연합뉴스, 중앙일보, 한국기자협회 기사 엄격 필터링)
         daum_queries = list(wire_queries)
         if target_keyword:
             daum_queries = [
@@ -1648,7 +1654,8 @@ class OnlineNewsTracker:
                 f'"[인사]{target_keyword}"',
                 f'"{target_keyword}" "[인사]" 뉴스1',
                 f'"{target_keyword}" "[인사]" 연합뉴스',
-                f'"{target_keyword}" "[인사]" 중앙일보'
+                f'"{target_keyword}" "[인사]" 중앙일보',
+                f'"{target_keyword}" "[인사]" 기자협회'
             ] + daum_queries
 
         for wq in daum_queries:
@@ -1678,10 +1685,11 @@ class OnlineNewsTracker:
                             seen_urls.add(href)
                             d_match = re.search(r"v\.daum\.net/v/(\d{4})(\d{2})(\d{2})", href)
                             d_text = f"{d_match.group(1)}-{d_match.group(2)}-{d_match.group(3)}" if d_match else ""
+                            m_guess = "뉴스1" if ("뉴스1" in press_name or "news1.kr" in href) else ("연합뉴스" if ("연합뉴스" in press_name or "yna.co.kr" in href) else ("중앙일보" if ("중앙일보" in press_name or "joongang.co.kr" in href) else ("한국기자협회" if ("기자협회" in press_name or "journalist.or.kr" in href) else "언론사")))
                             articles.append({
                                 "title": title,
                                 "url": href,
-                                "media": "뉴스1" if ("뉴스1" in press_name or "news1.kr" in href) else ("연합뉴스" if ("연합뉴스" in press_name or "yna.co.kr" in href) else ("중앙일보" if ("중앙일보" in press_name or "joongang.co.kr" in href) else "언론사")),
+                                "media": m_guess,
                                 "date_text": d_text
                             })
                             if len(articles) >= max_items:
@@ -1750,13 +1758,15 @@ class OnlineNewsTracker:
                 rss_targets = [
                     (f'"{target_keyword}" "[인사]" site:news1.kr', "뉴스1"),
                     (f'"{target_keyword}" "[인사]" site:yna.co.kr', "연합뉴스"),
-                    (f'"{target_keyword}" "[인사]" site:joongang.co.kr', "중앙일보")
+                    (f'"{target_keyword}" "[인사]" site:joongang.co.kr', "중앙일보"),
+                    (f'"{target_keyword}" "[인사]" site:journalist.or.kr', "한국기자협회")
                 ]
             else:
                 rss_targets = [
                     (f'"{clean_q}" site:news1.kr', "뉴스1"),
                     (f'"{clean_q}" site:yna.co.kr', "연합뉴스"),
-                    (f'"{clean_q}" site:joongang.co.kr', "중앙일보")
+                    (f'"{clean_q}" site:joongang.co.kr', "중앙일보"),
+                    (f'"{clean_q}" site:journalist.or.kr', "한국기자협회")
                 ]
 
             for q_rss, default_press in rss_targets:
@@ -1794,6 +1804,10 @@ class OnlineNewsTracker:
                                         wire_media = "뉴스1"
                                     elif "연합뉴스" in parts[1]:
                                         wire_media = "연합뉴스"
+                                    elif "중앙일보" in parts[1]:
+                                        wire_media = "중앙일보"
+                                    elif "기자협회" in parts[1]:
+                                        wire_media = "한국기자협회"
                                 else:
                                     title = raw_title.strip()
 
@@ -1862,9 +1876,10 @@ class OnlineNewsTracker:
                     except Exception as e:
                         pass
 
-                # 2. 일반 DOM 본문 영역 탐색 (연합뉴스 story-news 및 포털 인링크 등)
+                # 2. 일반 DOM 본문 영역 탐색 (한국기자협회 #news_body_area, 연합뉴스 story-news 및 포털 인링크 등)
                 if not full_text:
                     content_area = (
+                        soup.select_one("#news_body_area") or
                         soup.select_one("article.story-news") or
                         soup.select_one("div.story-news") or
                         soup.select_one("#dic_area") or
@@ -1909,6 +1924,10 @@ class OnlineNewsTracker:
                     result["media"] = "연합뉴스"
                 elif "joongang.co.kr" in final_url:
                     result["media"] = "중앙일보"
+                elif "journalist.or.kr" in final_url:
+                    result["media"] = "한국기자협회"
+                    full_text = full_text.split("한국기자협회의 전체기사 보기")[0].strip()
+                    result["text"] = full_text
                 else:
                     press_meta = (
                         soup.select_one("meta[property='og:article:author']") or
@@ -1958,7 +1977,7 @@ class OnlineNewsTracker:
         stop_event: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        특정 기자의 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
+        특정 기자의 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
         소속 언론사, 직급/부서, 이메일, 연대기 타임라인을 파싱하고 DB에 등록합니다.
         최신 기사 정보를 놓치지 않도록 최근 연도(2024~2026) 구간은 최신순 정렬을 최우선으로 탐색합니다.
         """
@@ -1966,7 +1985,7 @@ class OnlineNewsTracker:
         if not name:
             return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
 
-        # 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정:
+        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정:
         intervals = [
             (2024, 2026, "date"),
             (2020, 2023, "date"),
@@ -1983,6 +2002,7 @@ class OnlineNewsTracker:
                 f'{name} [인사] 뉴스1',
                 f'{name} [인사] 연합뉴스',
                 f'{name} [인사] 중앙일보',
+                f'{name} [인사] 기자협회',
                 f'[인사] "{name}"'
             ]
             if ey >= 2020:
@@ -2138,7 +2158,7 @@ class OnlineNewsTracker:
                 "found_records": len(all_records),
                 "articles_searched": len(candidate_articles),
                 "unique_reporters": res["unique_reporters"],
-                "message": f"연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 초고속 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 초고속 탐색하여 '{name}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
             if is_stopped:
@@ -2146,7 +2166,7 @@ class OnlineNewsTracker:
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),
-                "message": f"'{name}' 기자의 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다. (동명이인 공공기관 제외 완료)"
+                "message": f"'{name}' 기자의 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다. (동명이인 공공기관 제외 완료)"
             }
 
     @classmethod
@@ -2160,7 +2180,7 @@ class OnlineNewsTracker:
         stop_event: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        특정 매체명, 부서명, 직급명의 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사를 실시간 고속 검색하여
+        특정 매체명, 부서명, 직급명의 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사를 실시간 고속 검색하여
         역대 발령 레코드와 언론인 명단을 전수 수집하고 DB에 등록합니다.
         """
         media_clean = media.strip() if media else ""
@@ -2170,7 +2190,7 @@ class OnlineNewsTracker:
         if not media_clean and not dept_clean and not rank_clean:
             return {"found_records": 0, "articles_searched": 0, "message": "매체명, 부서명, 또는 직급명을 입력하세요."}
 
-        # 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정
+        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정
         intervals = [
             (2024, 2026, "date"),
             (2020, 2023, "date"),
@@ -2437,7 +2457,7 @@ class OnlineNewsTracker:
                 "found_records": len(exact_matches),
                 "articles_searched": len(candidate_articles),
                 "unique_reporters": engine_res["unique_reporters"],
-                "message": f"연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{target_label}' 역대 발령 기록 {len(exact_matches)}건(언론인 {engine_res['unique_reporters']}명)을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{target_label}' 역대 발령 기록 {len(exact_matches)}건(언론인 {engine_res['unique_reporters']}명)을 실시간 수집했습니다!{msg_suffix}"
             }
         elif dept_matches:
             sample_names = ", ".join([f"{r['name']}({r.get('rank_title', '')})" for r in dept_matches[:3]])
@@ -2464,7 +2484,7 @@ class OnlineNewsTracker:
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),
-                "message": f"연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 온라인 인사 기사 {len(candidate_articles)}건을 탐색했으나 '{target_label}' 조건의 발령 기록을 찾지 못했습니다."
+                "message": f"4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 온라인 인사 기사 {len(candidate_articles)}건을 탐색했으나 '{target_label}' 조건의 발령 기록을 찾지 못했습니다."
             }
 
     @classmethod
@@ -2477,7 +2497,7 @@ class OnlineNewsTracker:
         stop_event: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        특정 매체명 및 인물명의 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사를 실시간 검색하여
+        특정 매체명 및 인물명의 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사를 실시간 검색하여
         발령 레코드와 언론인 명단을 수집하고 DB에 등록합니다.
         """
         media_clean = media.strip() if media else ""
@@ -2490,7 +2510,7 @@ class OnlineNewsTracker:
         if not media_clean:
             return cls.track_reporter_online(reporter_name=name_clean, client_id=client_id, client_secret=client_secret, stop_event=stop_event)
 
-        # 연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정
+        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정
         intervals = [
             (2024, 2026, "date"),
             (2020, 2023, "date"),
@@ -2510,12 +2530,14 @@ class OnlineNewsTracker:
                 f'{media_clean} {name_clean} [인사] 뉴스1',
                 f'{media_clean} {name_clean} [인사] 연합뉴스',
                 f'{media_clean} {name_clean} [인사] 중앙일보',
+                f'{media_clean} {name_clean} [인사] 기자협회',
                 f'[인사] <{media_clean}> {name_clean}',
                 f'[인사] <중앙일보> {name_clean}',
                 f'[인사] ◇ {media_clean} {name_clean}',
                 f'{name_clean} [인사] 뉴스1',
                 f'{name_clean} [인사] 연합뉴스',
                 f'{name_clean} [인사] 중앙일보',
+                f'{name_clean} [인사] 기자협회',
             ]
             if ey >= 2020:
                 q_list.extend([
@@ -2693,7 +2715,7 @@ class OnlineNewsTracker:
                 "found_records": len(all_records),
                 "articles_searched": len(candidate_articles),
                 "unique_reporters": res["unique_reporters"],
-                "message": f"연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 {target_str} 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 {target_str} 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
             if is_stopped:
@@ -2701,7 +2723,7 @@ class OnlineNewsTracker:
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),
-                "message": f"연합뉴스·뉴스1·중앙일보 아카이브 전체 기간(1965~2026) 공식 [인사] 기사에서 {target_no_res} 기자의 발령 기록을 찾지 못했습니다."
+                "message": f"4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 공식 [인사] 기사에서 {target_no_res} 기자의 발령 기록을 찾지 못했습니다."
             }
 
     @classmethod
