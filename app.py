@@ -952,7 +952,16 @@ with tab_search:
                 selected_reporter_id = matched_reporters[0]["reporter_id"]
                 st.caption(f"선택된 언론인: **{matched_reporters[0]['display_label']}**")
         else:
-            st.info(f"온라인 인사 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
+            if search_mode == "매체 및 이름 검색" and st.session_state.get("filter_mn_media_val", ""):
+                m_filter = st.session_state.get("filter_mn_media_val", "")
+                other_reps = [r for r in db.search_reporters(name=active_name) if not is_media_organization(r["name"])]
+                if other_reps:
+                    other_medias = list(dict.fromkeys([r.get("current_media", "") for r in other_reps if r.get("current_media")]))
+                    st.info(f"'{m_filter}' 소속의 '{active_name}' 기자 발령 기록은 확인되지 않았으나, 타 매체({', '.join(other_medias)}) 소속 기록({len(other_reps)}명)이 확인되었습니다.")
+                else:
+                    st.info(f"최근 40개년 온라인 공식 인사 기사에서 '{m_filter}' 소속 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
+            else:
+                st.info(f"온라인 인사 기사에서 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
     elif filtered_reporters and search_mode != "매체 및 부서별 검색":
         filtered_reporters.sort(key=lambda x: str(x.get("last_seen", "")), reverse=True)
         if len(filtered_reporters) > 1:

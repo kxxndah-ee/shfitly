@@ -484,10 +484,16 @@ class PersonnelRegexParser:
             if any(k in line for k in ["게재 문의", "제보", "저작권", "무단전재", "재배포", "기사문의", "확인용", "카톡", "연락처"]):
                 continue
 
-            # 0-1. 통신사/바이라인 시그니처 및 기사 종결 기호 사전 정제 (예: (서울=연합뉴스), (서울=뉴스1), (세종=연합뉴스), (끝) 등)
+            # 0-1. 통신사/바이라인 시그니처 및 기사 종결 기호 사전 정제 (예: (서울=연합뉴스), (서울=뉴스1), [이데일리 김유정기자] 등)
             line = re.sub(r"\([가-힣\s]*=(?:연합뉴스|뉴스1|[가-힣\s]*)\)", "", line)
             line = re.sub(r"\([^)]*(?:연합뉴스|뉴스1|끝)[^)]*\)", "", line)
             line = re.sub(r"\([가-힣\w\s·-]*=[가-힣\w\s·-]*\)", "", line)
+            line = re.sub(r"\[[가-힣\w\s·-]*?(?:기자|특파원|뉴스1|연합뉴스|이데일리|뉴시스|글|사진)\]", "", line)
+            line = re.sub(r"\[[가-힣\s]*=(?:연합뉴스|뉴스1|[가-힣\s]*?)\]", "", line)
+
+            # 기사 도입부 문장(예: ~밝혔다, ~단행했다 등)은 언론사 헤더 변경 대상에서 제외
+            if any(w in line for w in ["밝혔다", "실시했다", "발표했다", "단행했다", "전했다", "따르면", "인사내용"]):
+                continue
 
             # 1. 언론사/기관 변경 감지 (기사 중간에 다른 언론사/기관 헤더가 나올 경우)
             media_match = cls.MEDIA_HEADER_PATTERN.search(line)
@@ -2247,6 +2253,11 @@ class OnlineNewsTracker:
                 body = fetched.get("text", "")
                 if not body or len(body) < 30 or name_clean not in body:
                     return None
+                allowed_media_tokens = [media_clean]
+                if media_clean in MEDIA_GROUP_ALIASES:
+                    allowed_media_tokens.extend(MEDIA_GROUP_ALIASES[media_clean])
+                if media_clean and not any(tok in body or tok in art.get("title", "") for tok in allowed_media_tokens):
+                    return None
                 return art, fetched
             except Exception:
                 return None
@@ -2278,10 +2289,21 @@ class OnlineNewsTracker:
                 pub_date=article_pub_date,
                 article_url=final_u
             )
-            matched_recs = [
-                r for r in recs 
-                if r["name"] == name_clean and is_media_organization(r.get("media", "")) and not is_excluded_department(r.get("dept", ""))
-            ]
+            matched_recs = []
+            for r in recs:
+                if r["name"] != name_clean or not is_media_organization(r.get("media", "")) or is_excluded_department(r.get("dept", "")):
+                    continue
+                rec_med = r.get("media", "")
+                if media_clean:
+                    is_match = (
+                        media_clean in rec_med 
+                        or rec_med in media_clean
+                        or (media_clean in MEDIA_GROUP_ALIASES and any(alias in rec_med for alias in MEDIA_GROUP_ALIASES[media_clean]))
+                    )
+                    if not is_match:
+                        continue
+                matched_recs.append(r)
+
             if matched_recs:
                 for mr in matched_recs:
                     if fetched.get("email") and not mr.get("email"):
@@ -2293,6 +2315,8 @@ class OnlineNewsTracker:
         if known_medias and not (stop_event and getattr(stop_event, "is_set", lambda: False)()):
             extra_tasks = []
             for km in list(known_medias):
+                if media_clean and km != media_clean and not (media_clean in MEDIA_GROUP_ALIASES and km in MEDIA_GROUP_ALIASES[media_clean]):
+                    continue
                 extra_tasks.append((f'{km} "{name_clean}" [인사]', 1986, 2026, "sim"))
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
@@ -2318,10 +2342,22 @@ class OnlineNewsTracker:
                                 article_url=fetched.get("origin_url") or art["url"]
                             )
                             for r in recs:
-                                if r["name"] == name_clean and is_media_organization(r.get("media", "")) and not is_excluded_department(r.get("dept", "")):
-                                    all_records.append(r)
+                                if r["name"] != name_clean or not is_media_organization(r.get("media", "")) or is_excluded_department(r.get("dept", "")):
+                                    continue
+                                rec_med = r.get("media", "")
+                                if media_clean:
+                                    is_match = (
+                                        media_clean in rec_med 
+                                        or rec_med in media_clean
+                                        or (media_clean in MEDIA_GROUP_ALIASES and any(alias in rec_med for alias in MEDIA_GROUP_ALIASES[media_clean]))
+                                    )
+                                    if not is_match:
+                                        continue
+                                all_records.append(r)
 
         is_stopped = bool(stop_event and getattr(stop_event, "is_set", lambda: False)())
+        target_str = f"'{media_clean} {name_clean}'" if media_clean else f"'{name_clean}'"
+        target_no_res = f"'{media_clean}' 소속 '{name_clean}'" if media_clean else f"'{name_clean}'"
         if all_records:
             engine = PersonnelTrackerEngine()
             res = engine.process_records(all_records, append=True)
@@ -2330,7 +2366,7 @@ class OnlineNewsTracker:
                 "found_records": len(all_records),
                 "articles_searched": len(candidate_articles),
                 "unique_reporters": res["unique_reporters"],
-                "message": f"최근 40개년(1986~2026) 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 '{media_clean} {name_clean}' 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
+                "message": f"최근 40개년(1986~2026) 공식 [인사]/<인사> 기사 {len(candidate_articles)}건을 탐색하여 {target_str} 기자의 발령 기록 {len(all_records)}건을 실시간 수집했습니다!{msg_suffix}"
             }
         else:
             if is_stopped:
@@ -2338,7 +2374,7 @@ class OnlineNewsTracker:
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),
-                "message": f"'{media_clean}' '{name_clean}' 기자의 최근 40개년(1986~2026) 온라인 공식 [인사] 기사 내 발령 기록을 찾지 못했습니다."
+                "message": f"최근 40개년(1986~2026) 온라인 공식 [인사] 기사에서 {target_no_res} 기자의 발령 기록을 찾지 못했습니다."
             }
 
     @classmethod
