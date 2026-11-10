@@ -599,25 +599,15 @@ with tab_search:
     st.session_state["search_mode_selection"] = current_mode
     default_mode_idx = search_options.index(current_mode) if current_mode in search_options else 0
 
-    col_mode, col_quick_btn = st.columns([3.5, 1], vertical_alignment="bottom")
-    with col_mode:
-        search_mode = st.radio(
-            "검색 모드 선택",
-            options=search_options,
-            horizontal=True,
-            label_visibility="collapsed",
-            index=default_mode_idx,
-            key="search_mode_radio"
-        )
-        st.session_state["search_mode_selection"] = search_mode
-    with col_quick_btn:
-        if st.button("최신 발령 실시간 수집", use_container_width=True, type="secondary", help="인터넷 뉴스에서 최신 인사 발령 기사 15건을 실시간 수집하여 등록합니다."):
-            with st.spinner("온라인 포털에서 최신 인사 기사 전문을 수집 및 분석 중..."):
-                nid = get_secret("naver_client_id", "")
-                nsec = get_secret("naver_client_secret", "")
-                res = OnlineNewsTracker.fetch_latest_online_personnel(max_articles=15, client_id=nid, client_secret=nsec)
-                st.session_state["upload_banner"] = res["message"]
-                st.rerun()
+    search_mode = st.radio(
+        "검색 모드 선택",
+        options=search_options,
+        horizontal=True,
+        label_visibility="collapsed",
+        index=default_mode_idx,
+        key="search_mode_radio"
+    )
+    st.session_state["search_mode_selection"] = search_mode
 
     all_reporters = [
         r for r in db.get_all_reporters() 
