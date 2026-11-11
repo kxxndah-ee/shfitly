@@ -1209,7 +1209,7 @@ with tab_search:
             matched_reporters.sort(key=lambda x: (x.get("name", "") == active_name, str(x.get("last_seen", ""))), reverse=True)
             
             if len(matched_reporters) > 1:
-                # [복수 언론인 발견 시] 모든 언론인을 다 보여주기: 전체 명단 테이블 + 개별 탭
+                # [복수 언론인 발견 시] 전체 명단 테이블 + 선택한 1인의 발령 내역 및 프로필 집중 보기
                 render_html(f"""
                 <div class="topic-section-divider"></div>
                 <div class="topic-section-header">
@@ -1220,7 +1220,13 @@ with tab_search:
                     </div>
                 </div>
                 """)
-                st.caption(f"'{active_name}' 검색 조건에 부합하는 모든 언론인({len(matched_reporters)}명)입니다. 여러 명의 기록이 모두 확인되었으므로, 아래 전체 비교 명단과 개별 탭을 통해 전원의 커리어 프로필과 발령 연대기를 모두 확인하실 수 있습니다.")
+                st.caption(f"'{active_name}' 검색 조건에 부합하는 모든 언론인({len(matched_reporters)}명)입니다. 아래 선택 상자에서 특정 언론인을 선택하시면 해당 인물 1인에 대한 발령 내역과 상세 프로필만 집중하여 확인하실 수 있습니다.")
+
+                # 각 언론인별 실제 발령 기록 사전 로드 (0건 표시 방지)
+                reporter_timelines = {
+                    r["reporter_id"]: db.get_reporter_timeline(r["reporter_id"])
+                    for r in matched_reporters
+                }
 
                 df_all_matched = pd.DataFrame([{
                     "성명": r.get("name", ""),
@@ -1228,27 +1234,125 @@ with tab_search:
                     "부서": r.get("current_dept", ""),
                     "직급": r.get("current_rank", ""),
                     "활동 추적 기간": f"{str(r.get('first_seen', ''))[:7]} ~ {str(r.get('last_seen', ''))[:7]}" if r.get('first_seen') else "",
-                    "발령 기록": f"{r.get('record_count', 0)}건",
+                    "발령 기록": f"{len(reporter_timelines.get(r.get('reporter_id'), []))}건",
                     "식별자": r.get("reporter_id", "")
                 } for r in matched_reporters])
                 st.dataframe(df_all_matched, use_container_width=True, hide_index=True)
 
-                # 발령 원문 테이블이 있는 경우 함께 표시
-                if matched_records:
-                    unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
-                    unique_matched = [r for r in unique_matched if not is_excluded_department(r.get("dept", ""))]
-                    if unique_matched:
-                        render_html(f"""
-                        <div class="topic-section-divider"></div>
-                        <div class="topic-section-header">
-                            <div class="topic-title-wrapper">
-                                <span class="topic-accent-bar" style="background-color: #0284C7;"></span>
-                                <span class="topic-section-title">{active_name} 관련 기사 발령 내역</span>
-                                <span class="badge badge-normal" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">총 {len(unique_matched)}건</span>
+                # 단일 인물 선택 옵션 구성
+                rep_choice_labels = []
+                for r in matched_reporters:
+                    med = normalize_media_name(r.get('current_media', ''))
+                    dept = r.get('current_dept', '') or '부서 미표기'
+                    rnk = r.get('current_rank', '') or ''
+                    cnt = len(reporter_timelines.get(r['reporter_id'], []))
+                    rep_choice_labels.append(f"{r['name']} ({med} · {dept} {rnk} · 발령 {cnt}건)".strip())
+
+                all_choice_label = f"전체 동명이인 함께 보기 (통합 {len(matched_reporters)}명)"
+                all_options = rep_choice_labels + [all_choice_label]
+
+                render_html('<div class="topic-section-divider"></div>')
+                if len(all_options) <= 4:
+                    selected_choice = st.radio(
+                        "조회할 언론인 선택 (선택한 인물의 발령 내역과 프로필만 표시됩니다)",
+                        options=all_options,
+                        index=0,
+                        horizontal=True,
+                        key="radio_matched_reporters_choice"
+                    )
+                else:
+                    selected_choice = st.selectbox(
+                        "조회할 언론인 선택 (선택한 인물의 발령 내역과 프로필만 표시됩니다)",
+                        options=all_options,
+                        index=0,
+                        key="sb_matched_reporters_choice"
+                    )
+
+                if selected_choice == all_choice_label:
+                    # 전체 통합 보기 모드
+                    if matched_records:
+                        unique_matched = MediaDatabase.deduplicate_timeline_records(matched_records, window_days=60, sort_desc=True)
+                        unique_matched = [r for r in unique_matched if not is_excluded_department(r.get("dept", ""))]
+                        if unique_matched:
+                            render_html(f"""
+                            <div class="topic-section-header">
+                                <div class="topic-title-wrapper">
+                                    <span class="topic-accent-bar" style="background-color: #0284C7;"></span>
+                                    <span class="topic-section-title">{active_name} 관련 전체 기사 발령 내역 (통합)</span>
+                                    <span class="badge badge-normal" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">총 {len(unique_matched)}건</span>
+                                </div>
                             </div>
+                            """)
+                            df_display = pd.DataFrame([{
+                                "발령일자": r.get("pub_date", ""),
+                                "언론사": normalize_media_name(r.get("media", "")),
+                                "발령구분": r.get("action_type", "발령"),
+                                "부서": r.get("dept", ""),
+                                "직급": r.get("rank_title", ""),
+                                "성명": r.get("name", ""),
+                                "기사원문(링크주소)": r.get("article_url", "")
+                            } for r in unique_matched[:500]])
+                            st.dataframe(
+                                df_display,
+                                column_config={
+                                    "발령일자": st.column_config.TextColumn("발령일자", alignment="center"),
+                                    "언론사": st.column_config.TextColumn("언론사", alignment="center"),
+                                    "발령구분": st.column_config.TextColumn("발령구분", alignment="center"),
+                                    "부서": st.column_config.TextColumn("부서", alignment="center"),
+                                    "직급": st.column_config.TextColumn("직급", alignment="center"),
+                                    "성명": st.column_config.TextColumn("성명", alignment="center"),
+                                    "기사원문(링크주소)": st.column_config.LinkColumn(
+                                        "기사원문(링크주소)",
+                                        alignment="center",
+                                        help="클릭 시 포털 기사 원문 페이지로 이동합니다.",
+                                        validate=r"^https?://.*",
+                                        max_chars=60,
+                                        display_text="기사 원문 열기"
+                                    )
+                                },
+                                use_container_width=True, 
+                                hide_index=True
+                            )
+
+                    # 복수 언론인 전원의 개별 프로필 및 타임라인 탭 렌더링
+                    render_html('<div class="topic-section-divider"></div>')
+                    tab_titles = [
+                        f"{r['name']} ({normalize_media_name(r.get('current_media', ''))} · {r.get('current_dept', '') or '부서 미표기'})"
+                        for r in matched_reporters
+                    ]
+                    reporter_tabs = st.tabs(tab_titles)
+                    for idx, r_tab in enumerate(reporter_tabs):
+                        with r_tab:
+                            rep_item = matched_reporters[idx]
+                            timeline_item = reporter_timelines.get(rep_item["reporter_id"], [])
+                            render_single_reporter_profile(rep_item, timeline_item, db, key_suffix=f"matched_all_{idx}")
+
+                else:
+                    # [단일 선택 모드] 선택된 한 사람에 대한 발령 내역과 프로필만 표기!
+                    sel_idx = rep_choice_labels.index(selected_choice)
+                    selected_rep = matched_reporters[sel_idx]
+                    sel_timeline = reporter_timelines.get(selected_rep["reporter_id"], [])
+
+                    med_clean = normalize_media_name(selected_rep.get("current_media", ""))
+                    dept_clean = selected_rep.get("current_dept", "") or "부서 미표기"
+                    rank_clean = selected_rep.get("current_rank", "") or ""
+                    rep_header_label = f"{selected_rep['name']} ({med_clean} · {dept_clean} {rank_clean})".strip()
+
+                    # 1. 선택된 인물 단독 발령 내역 테이블
+                    render_html(f"""
+                    <div class="topic-section-header">
+                        <div class="topic-title-wrapper">
+                            <span class="topic-accent-bar" style="background-color: #2563EB;"></span>
+                            <span class="topic-section-title">{rep_header_label} 발령 내역</span>
+                            <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">총 {len(sel_timeline)}건</span>
                         </div>
-                        """)
-                        df_display = pd.DataFrame([{
+                    </div>
+                    """)
+
+                    if not sel_timeline:
+                        st.info(f"'{rep_header_label}' 언론인의 상세 발령 내역이 등록되어 있지 않습니다.")
+                    else:
+                        df_single_matched = pd.DataFrame([{
                             "발령일자": r.get("pub_date", ""),
                             "언론사": normalize_media_name(r.get("media", "")),
                             "발령구분": r.get("action_type", "발령"),
@@ -1256,9 +1360,9 @@ with tab_search:
                             "직급": r.get("rank_title", ""),
                             "성명": r.get("name", ""),
                             "기사원문(링크주소)": r.get("article_url", "")
-                        } for r in unique_matched[:500]])
+                        } for r in sel_timeline])
                         st.dataframe(
-                            df_display,
+                            df_single_matched,
                             column_config={
                                 "발령일자": st.column_config.TextColumn("발령일자", alignment="center"),
                                 "언론사": st.column_config.TextColumn("언론사", alignment="center"),
@@ -1275,22 +1379,12 @@ with tab_search:
                                     display_text="기사 원문 열기"
                                 )
                             },
-                            use_container_width=True, 
+                            use_container_width=True,
                             hide_index=True
                         )
 
-                # 복수 언론인 전원의 개별 프로필 및 타임라인 탭 렌더링
-                render_html('<div class="topic-section-divider"></div>')
-                tab_titles = [
-                    f"{r['name']} ({normalize_media_name(r.get('current_media', ''))} · {r.get('current_dept', '') or '부서 미표기'})"
-                    for r in matched_reporters
-                ]
-                reporter_tabs = st.tabs(tab_titles)
-                for idx, r_tab in enumerate(reporter_tabs):
-                    with r_tab:
-                        rep_item = matched_reporters[idx]
-                        timeline_item = db.get_reporter_timeline(rep_item["reporter_id"])
-                        render_single_reporter_profile(rep_item, timeline_item, db, key_suffix=f"matched_{idx}")
+                    # 2. 선택된 인물 단독 프로필 렌더링
+                    render_single_reporter_profile(selected_rep, sel_timeline, db, key_suffix=f"sel_single_{sel_idx}")
 
             else:
                 # [단일 언론인 발견 시] '선택된 언론인' 대신 단일 인물임을 명확히 안내
@@ -1363,27 +1457,39 @@ with tab_search:
                         </div>
                     </div>
                     """)
+                    other_timelines = {
+                        r["reporter_id"]: db.get_reporter_timeline(r["reporter_id"])
+                        for r in other_reps
+                    }
                     df_other = pd.DataFrame([{
                         "성명": r.get("name", ""),
                         "소속 언론사": normalize_media_name(r.get("current_media", "")),
                         "부서": r.get("current_dept", ""),
                         "직급": r.get("current_rank", ""),
                         "활동 추적 기간": f"{str(r.get('first_seen', ''))[:7]} ~ {str(r.get('last_seen', ''))[:7]}" if r.get('first_seen') else "",
-                        "발령 기록": f"{r.get('record_count', 0)}건"
+                        "발령 기록": f"{len(other_timelines.get(r.get('reporter_id'), []))}건"
                     } for r in other_reps])
                     st.dataframe(df_other, use_container_width=True, hide_index=True)
 
                     if len(other_reps) == 1:
                         o_rep = other_reps[0]
-                        o_tl = db.get_reporter_timeline(o_rep["reporter_id"])
+                        o_tl = other_timelines.get(o_rep["reporter_id"], [])
                         render_single_reporter_profile(o_rep, o_tl, db, key_suffix="other_0")
                     else:
-                        o_tabs = st.tabs([f"{r['name']} ({normalize_media_name(r.get('current_media', ''))} · {r.get('current_dept', '') or '부서 미표기'})" for r in other_reps])
-                        for o_idx, o_tab in enumerate(o_tabs):
-                            with o_tab:
-                                o_rep = other_reps[o_idx]
-                                o_tl = db.get_reporter_timeline(o_rep["reporter_id"])
-                                render_single_reporter_profile(o_rep, o_tl, db, key_suffix=f"other_{o_idx}")
+                        o_options = [
+                            f"{r['name']} ({normalize_media_name(r.get('current_media', ''))} · {r.get('current_dept', '') or '부서 미표기'} {r.get('current_rank', '') or ''} · 발령 {len(other_timelines.get(r['reporter_id'], []))}건)".strip()
+                            for r in other_reps
+                        ]
+                        o_selected = st.radio(
+                            "조회할 언론인 선택 (선택한 인물의 발령 내역과 프로필만 표시됩니다)",
+                            options=o_options,
+                            horizontal=True,
+                            key="radio_other_reps_choice"
+                        )
+                        o_idx = o_options.index(o_selected)
+                        o_rep = other_reps[o_idx]
+                        o_tl = other_timelines.get(o_rep["reporter_id"], [])
+                        render_single_reporter_profile(o_rep, o_tl, db, key_suffix=f"other_{o_idx}")
                 else:
                     st.info(f"아카이브 전체 기간 온라인 공식 인사 기사에서 '{m_filter}' 소속 '{active_name}' 기자의 발령 기록을 찾지 못했습니다.")
             else:
