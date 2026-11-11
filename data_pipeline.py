@@ -481,7 +481,7 @@ class PersonnelRegexParser:
             return None
         if not re.fullmatch(r"[가-힣]{2,4}", name):
             return None
-        if name in STOPWORDS:
+        if name in STOPWORDS or name in ["보직발령", "정기인사", "인사발령", "조직개편", "보직변경", "승진인사", "정기승진", "보직임명"]:
             return None
         if any(name.endswith(suffix) for suffix in ["팀", "실", "국", "부", "처", "센터", "단", "소", "파트", "총괄", "데스크", "에디터", "본부"]):
             return None
@@ -654,15 +654,31 @@ class PersonnelRegexParser:
                 item_clean = re.sub(r"\([가-힣\w\s·-]*\)", "", item_clean)
                 item_clean = re.sub(r"\s+", " ", item_clean).strip()
 
-                # 서브 아이템 파싱 (쉼표, 슬래시, 세미콜론 등으로 나열된 경우)
-                sub_records = cls._parse_single_bullet(
-                    item_clean, current_media, current_action, current_section_rank, found_email
-                )
-                for rec in sub_records:
-                    rec["pub_date"] = pub_date or str(datetime.date.today())
-                    rec["article_title"] = article_title or ""
-                    rec["article_url"] = article_url or ""
-                    results.append(rec)
+                # 겸직(겸) 분할 처리 (예: 뉴미디어랩부장 겸 건설부동산부장 허남영)
+                split_items = []
+                if " 겸 " in item_clean:
+                    c_parts = item_clean.split(" 겸 ")
+                    last_toks = c_parts[-1].strip().split()
+                    cand_n = cls.clean_name(last_toks[-1]) if last_toks else None
+                    for cp in c_parts:
+                        cp_toks = cp.strip().split()
+                        if cand_n and not cls.clean_name(cp_toks[-1]):
+                            split_items.append(f"{cp.strip()} {cand_n}")
+                        else:
+                            split_items.append(cp.strip())
+                else:
+                    split_items = [item_clean]
+
+                for s_item in split_items:
+                    # 서브 아이템 파싱 (쉼표, 슬래시, 세미콜론 등으로 나열된 경우)
+                    sub_records = cls._parse_single_bullet(
+                        s_item, current_media, current_action, current_section_rank, found_email
+                    )
+                    for rec in sub_records:
+                        rec["pub_date"] = pub_date or str(datetime.date.today())
+                        rec["article_title"] = article_title or ""
+                        rec["article_url"] = article_url or ""
+                        results.append(rec)
 
         return results
 
@@ -2326,7 +2342,13 @@ class OnlineNewsTracker:
             q_list = []
             if media_clean and rank_clean and dept_clean:
                 q_list.extend([
+                    f'{media_clean} "{dept_clean}부장" [인사]',
+                    f'{media_clean} "{dept_clean}부" "{rank_clean}" [인사]',
                     f'{media_clean} "{dept_clean}" "{rank_clean}" [인사]',
+                    f'{media_clean} "{dept_clean}" "부장직대" [인사]',
+                    f'{media_clean} "{dept_clean}" "부장대우" [인사]',
+                    f'"{media_clean}" "{dept_clean}부장"',
+                    f'"{media_clean}" "{dept_clean}" "[인사]"',
                     f'{media_clean} "{dept_clean}" [인사]',
                     f'{media_clean} {dept_clean} [인사]',
                     f'{media_clean} "{rank_clean}" [인사]',
@@ -3296,6 +3318,19 @@ class MediaDatabase:
                 return s[:-1]
             return s
         
+        def _rank_equiv(r1: str, r2: str) -> bool:
+            r1_c = r1.strip()
+            r2_c = r2.strip()
+            if r1_c == r2_c:
+                return True
+            if all(any(k in r for k in ["부장", "부장대우", "부장직대"]) for r in [r1_c, r2_c]):
+                return True
+            if all(any(k in r for k in ["차장", "차장대우"]) for r in [r1_c, r2_c]):
+                return True
+            if all(any(k in r for k in ["국장", "부국장", "국장대우"]) for r in [r1_c, r2_c]):
+                return True
+            return False
+
         # 날짜 오름차순 정렬 (과거 -> 현재)
         sorted_records = sorted(records, key=lambda x: str(x.get("pub_date", "1970-01-01"))[:10])
         merged: List[Dict[str, Any]] = []
@@ -3313,7 +3348,7 @@ class MediaDatabase:
                 same_name = (not m.get("name") or not rec_copy.get("name") or m.get("name", "").strip() == rec_copy.get("name", "").strip())
                 same_media = (normalize_media_name(m.get("media", "")) == normalize_media_name(rec_copy.get("media", "")) or are_group_affiliates(m.get("media", ""), rec_copy.get("media", "")))
                 same_dept = _dept_key(m.get("dept", "")) == _dept_key(rec_copy.get("dept", ""))
-                same_rank = m.get("rank_title", "").strip() == rec_copy.get("rank_title", "").strip()
+                same_rank = _rank_equiv(m.get("rank_title", ""), rec_copy.get("rank_title", ""))
 
                 if same_name and same_media and same_dept and same_rank:
                     m_date_str = str(m.get("pub_date", ""))[:10]
