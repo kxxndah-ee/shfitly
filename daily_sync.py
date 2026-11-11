@@ -42,8 +42,15 @@ from parser_pipeline import (
     DEPT_CATEGORIES,
     RANK_SCORE_MAP
 )
+from data_pipeline import (
+    PersonnelTrackerEngine,
+    PersonnelRegexParser,
+    is_media_organization,
+    is_excluded_department
+)
 
 DB_NAME = "media_personnel.db"
+TRACKER_DB_NAME = "media_tracker.db"
 LOG_FILE = "daily_sync.log"
 
 HEADERS = {
@@ -98,8 +105,9 @@ def setup_logger(log_file: str = LOG_FILE) -> logging.Logger:
 class MultiSourcePersonnelSync:
     """4개 매체 통합 일일 자동 동기화 및 이직 추적 엔진"""
 
-    def __init__(self, db_path: str = DB_NAME, logger: Optional[logging.Logger] = None):
+    def __init__(self, db_path: str = DB_NAME, tracker_db_path: str = TRACKER_DB_NAME, logger: Optional[logging.Logger] = None):
         self.db_path = db_path
+        self.tracker_db_path = tracker_db_path
         self.logger = logger or setup_logger()
         self._ensure_db_schema()
 
@@ -464,6 +472,7 @@ class MultiSourcePersonnelSync:
 
         self.logger.info(f"파싱 대상 기사: 총 {len(articles)}건")
         total_events = 0
+        all_tracker_records = []
 
         for art in articles:
             art_id = art["article_id"]
@@ -472,6 +481,7 @@ class MultiSourcePersonnelSync:
             pub_date = art["publish_date"]
             target_media = art["target_media"] or "언론사"
 
+            # 1. media_personnel.db career_events 포맷 파싱
             parsed_list = parse_article_content(content, target_media, pub_date)
 
             for rec in parsed_list:
@@ -493,8 +503,32 @@ class MultiSourcePersonnelSync:
                 ))
                 total_events += 1
 
+            # 2. media_tracker.db (UI 연동) personnel_records 포맷 파싱
+            regex_recs = PersonnelRegexParser.parse_article_text(
+                article_text=content,
+                default_media=target_media,
+                article_title=title,
+                pub_date=pub_date,
+                article_url=art_id
+            )
+            matched_regex_recs = [
+                r for r in regex_recs
+                if is_media_organization(r.get("media", "")) and not is_excluded_department(r.get("dept", ""))
+            ]
+            if matched_regex_recs:
+                all_tracker_records.extend(matched_regex_recs)
+
         conn.commit()
         conn.close()
+
+        # UI 연동 DB (media_tracker.db) 동기화
+        if all_tracker_records:
+            try:
+                engine = PersonnelTrackerEngine(self.tracker_db_path)
+                engine.process_records(all_tracker_records, append=True)
+                self.logger.info(f"[Step 2 동기화] {self.tracker_db_path} 에 {len(all_tracker_records)}건 발령 데이터 즉시 연동 완료.")
+            except Exception as e:
+                self.logger.error(f"[Step 2 동기화 오류] {self.tracker_db_path} 연동 실패: {e}")
 
         self.logger.info(f"[Step 2 완료] {len(articles)}건 기사 파싱 -> {total_events}건 발령 이벤트 적재 완료.")
         return total_events
