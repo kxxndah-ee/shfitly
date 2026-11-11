@@ -145,13 +145,41 @@ STOPWORDS = {
 }
 
 MEDIA_GROUP_ALIASES: Dict[str, List[str]] = {
-    "중앙일보": ["중앙그룹", "중앙홀딩스", "중앙미디어", "중앙일보S", "JTBC", "월간중앙", "일간스포츠"],
+    "중앙일보": ["중앙그룹", "중앙홀딩스", "중앙미디어", "중앙일보S", "JTBC", "월간중앙", "일간스포츠", "이코노미스트"],
     "동아일보": ["동아미디어그룹"],
     "매일경제": ["매경미디어그룹", "매경미디어"],
-    "한국경제": ["한경미디어그룹", "한경닷컴"],
+    "한국경제": ["한경미디어그룹", "한경닷컴", "한경비즈니스", "한경매거진"],
     "조선일보": ["조선미디어그룹"],
     "헤럴드경제": ["헤럴드", "헤럴드미디어"],
+    "머니투데이": ["머니투데이그룹", "머니투데이미디어", "머투"],
+    "머니투데이방송": ["MTN", "머니투데이방송", "mtn"],
+    "뉴스1": ["뉴스원", "news1"],
+    "이데일리": ["이데일리M", "이데일리m", "KG그룹"],
 }
+
+
+def are_group_affiliates(media1: str, media2: str) -> bool:
+    """두 언론사가 동일 미디어 그룹 또는 계열사 관계인지 확인합니다."""
+    m1 = normalize_media_name(media1).strip()
+    m2 = normalize_media_name(media2).strip()
+    if not m1 or not m2 or m1 == m2:
+        return True
+    groups = [
+        {"중앙일보", "중앙일보s", "중앙그룹", "이코노미스트", "일간스포츠", "jtbc", "월간중앙"},
+        {"이데일리", "이데일리m", "일간스포츠", "이코노미스트"},
+        {"머니투데이", "머니투데이방송", "mtn", "머니s", "뉴스1", "뉴시스"},
+        {"한국경제", "한경닷컴", "한경비즈니스", "한국경제tv", "한경매거진"},
+        {"매일경제", "매경닷컴", "mbn", "매경이코노미"},
+        {"헤럴드경제", "코리아헤럴드", "헤럴드"},
+        {"조선일보", "조선비즈", "tv조선", "스포츠조선", "주간조선"},
+        {"동아일보", "채널a", "스포츠동아", "주간동아"},
+    ]
+    m1_low = m1.lower()
+    m2_low = m2.lower()
+    for g in groups:
+        if any(m1_low in x or x in m1_low for x in g) and any(m2_low in x or x in m2_low for x in g):
+            return True
+    return False
 
 
 def classify_domain(dept_name: str) -> str:
@@ -232,7 +260,11 @@ def normalize_media_name(raw_name: str) -> str:
     if "아시아경제" in name or name in ["아경"]: return "아시아경제"
     if "헤럴드" in name: return "헤럴드경제"
     if "파이낸셜" in name: return "파이낸셜뉴스"
+    if "머니투데이방송" in name or "mtn" in name.lower(): return "머니투데이방송"
     if "머니투데이" in name or "머투" in name: return "머니투데이"
+    if "이데일리m" in name.lower() or "이데일리 m" in name.lower(): return "이데일리M"
+    if "이코노미스트" in name: return "이코노미스트"
+    if "일간스포츠" in name: return "일간스포츠"
     if "이데일리" in name: return "이데일리"
     if "디지털타임스" in name: return "디지털타임스"
     if "전자신문" in name: return "전자신문"
@@ -290,7 +322,8 @@ KNOWN_MEDIA_NAMES: set = {
     "아시아투데이", "파이낸셜뉴스", "이투데이", "뉴스토마토", "머니s", "블로터", "더벨", "비즈한국",
     "비즈니스워치", "글로벌이코노믹", "신아일보", "아주경제", "브릿지경제", "한국정경신문", "스마트에프엔",
     "fetv", "뉴스핌", "뉴스웨이", "뉴스포스트", "메트로신문", "에너지경제",
-    "기자협회", "한국기자협회", "기자협회보"
+    "기자협회", "한국기자협회", "기자협회보",
+    "머니투데이방송", "mtn", "MTN", "이코노미스트", "일간스포츠", "이데일리M", "이데일리m"
 }
 
 NON_MEDIA_KEYWORDS: List[str] = [
@@ -538,12 +571,13 @@ class PersonnelRegexParser:
                 clean_sec_hdr = re.sub(r"^[◇◆■▲△▼▷▶<\[\(【\s]+|[>\]\)】\s]+$", "", line).strip()
                 clean_sec_hdr = re.sub(r"\([^\)]*\)", "", clean_sec_hdr).strip()
                 clean_sec_hdr = re.split(r"[\]\)>】〉»<\[\(【〈«]", clean_sec_hdr)[0].strip()
-                if len(clean_sec_hdr) <= 15 and not any(cls.clean_name(t) for t in line.split()):
+                is_action_or_rank = any(act in clean_sec_hdr for act in cls.ACTION_CANDIDATES) or any(rnk in clean_sec_hdr for rnk in ["부장", "차장", "국장", "부국장", "본부장", "팀장", "실장", "직대", "대우", "기자", "논설", "주필", "위원"])
+                if not is_action_or_rank and len(clean_sec_hdr) <= 15 and not any(cls.clean_name(t) for t in line.split()):
                     if is_department_header(clean_sec_hdr):
                         pass
                     elif is_media_organization(clean_sec_hdr):
                         current_media = normalize_media_name(clean_sec_hdr)
-                    elif any(nmk in clean_sec_hdr for nmk in NON_MEDIA_KEYWORDS) or clean_sec_hdr.endswith(("처", "청", "원", "회", "공사", "공단", "재단", "시", "대", "대학교", "대학", "병원", "학원")):
+                    elif any(nmk in clean_sec_hdr for nmk in NON_MEDIA_KEYWORDS) or clean_sec_hdr.endswith(("처", "청", "원", "회", "공사", "공단", "재단", "시", "대학교", "대학", "병원", "학원")):
                         current_media = clean_sec_hdr
 
             # 2. 발령 액션 및 섹션 직급 헤더 감지 (예: ◇부장대우 승진, ◇차장 승진, <승진>, <보임>, <임용>, ◇전보 등)
@@ -569,13 +603,14 @@ class PersonnelRegexParser:
                 cand_media_clean = re.sub(r"^[<\[\(【\s]+|[>\]\)】\s]+$", "", item).strip()
                 cand_media_clean = re.sub(r"\([^\)]*\)", "", cand_media_clean).strip()
                 cand_media_clean = re.split(r"[\]\)>】〉»<\[\(【〈«]", cand_media_clean)[0].strip()
-                if len(cand_media_clean) <= 15 and not any(cls.clean_name(t) for t in item.split()):
+                is_item_action_or_rank = any(act in cand_media_clean for act in cls.ACTION_CANDIDATES) or any(rnk in cand_media_clean for rnk in ["부장", "차장", "국장", "부국장", "본부장", "팀장", "실장", "직대", "대우", "기자", "논설", "주필", "위원"])
+                if not is_item_action_or_rank and len(cand_media_clean) <= 15 and not any(cls.clean_name(t) for t in item.split()):
                     if is_department_header(cand_media_clean):
                         continue
                     elif is_media_organization(cand_media_clean):
                         current_media = normalize_media_name(cand_media_clean)
                         continue
-                    elif any(nmk in cand_media_clean for nmk in NON_MEDIA_KEYWORDS) or cand_media_clean.endswith(("처", "청", "원", "회", "공사", "공단", "재단", "시", "대", "대학교", "대학", "병원", "학원")):
+                    elif any(nmk in cand_media_clean for nmk in NON_MEDIA_KEYWORDS) or cand_media_clean.endswith(("처", "청", "원", "회", "공사", "공단", "재단", "시", "대학교", "대학", "병원", "학원")):
                         current_media = cand_media_clean
                         continue
 
@@ -775,13 +810,18 @@ class PersonnelRegexParser:
                 if not is_media_organization(final_media):
                     continue  # 언론사 인사소식만 정리 (비언론사 배제)
 
-                clean_dept = re.sub(r"^[△▲▷▶○●■□◆◇◈▣◎⊙◐◑·ㆍ\-\*―━\s]+", "", extracted_dept).strip()
+                clean_dept = re.sub(r'^[△▲▷▶○●■□◆◇◈▣◎⊙◐◑·ㆍ\-\*―━“"”’‘\'〃\s]+|[“"”’‘\'〃\s]+$', '', extracted_dept).strip()
+                clean_dept = re.sub(r'[\s“"”’‘\'〃]+', ' ', clean_dept).strip()
+                if not clean_dept and last_dept:
+                    clean_dept = last_dept
                 clean_rank = re.sub(r"^[△▲▷▶○●■□◆◇◈▣◎⊙◐◑·ㆍ\-\*―━\s]+", "", extracted_rank).strip()
                 for bureau in ["편집국 ", "보도국 ", "논설실 ", "디지털뉴스국 ", "신문총괄 "]:
                     if clean_dept.startswith(bureau) and len(clean_dept) > len(bureau):
                         clean_dept = clean_dept[len(bureau):].strip()
                 if not clean_rank:
                     clean_rank = "기자"
+                if clean_dept in ["산업", "정치", "경제", "사회", "문화", "국제", "금융", "증권", "건설부동산"]:
+                    clean_dept = clean_dept + ("팀" if "팀" in clean_rank else "부")
 
                 # 예능, 드라마 등 비보도 방송 제작 부서 제외
                 if is_excluded_department(clean_dept):
@@ -852,13 +892,36 @@ class PersonnelTrackerEngine:
             effective_records = [r for r in raw_records if not is_excluded_department(r.get("dept", ""))]
             new_added_count = len(effective_records)
 
-        # 언론사 인사소식만 엄격 필터링 (예능 등 비보도 부서 배제)
-        effective_records = [
-            r for r in effective_records 
-            if is_media_organization(r.get("media", "")) 
-            and (not r.get("article_title") or is_personnel_article_title(r.get("article_title", "")))
-            and not is_excluded_department(r.get("dept", ""))
-        ]
+        # 언론사 인사소식만 엄격 필터링 및 매체명/부서명 클렌징
+        cleaned_records = []
+        for r in effective_records:
+            if not is_media_organization(r.get("media", "")) or (r.get("article_title") and not is_personnel_article_title(r.get("article_title", ""))) or is_excluded_department(r.get("dept", "")):
+                continue
+            r_copy = dict(r)
+            # 매체명 정규화
+            art_t = r_copy.get("article_title", "")
+            raw_t = r_copy.get("raw_text", "")
+            if "머니투데이방송" in art_t or "MTN" in art_t or "머니투데이방송" in raw_t or "MTN" in raw_t:
+                r_copy["media"] = "머니투데이방송"
+            elif "이코노미스트" in art_t or "이코노미스트" in raw_t:
+                r_copy["media"] = "이코노미스트"
+            elif "일간스포츠" in art_t or "일간스포츠" in raw_t:
+                r_copy["media"] = "일간스포츠"
+            else:
+                r_copy["media"] = normalize_media_name(r_copy.get("media", ""))
+
+            # 부서명 따옴표/반복부호 정제
+            d_str = re.sub(r'^[△▲▷▶○●■□◆◇◈▣◎⊙◐◑·ㆍ\-\*―━“"”’‘\'〃\s]+|[“"”’‘\'〃\s]+$', '', str(r_copy.get("dept", ""))).strip()
+            d_str = re.sub(r'[\s“"”’‘\'〃]+', ' ', d_str).strip()
+            rnk = r_copy.get("rank_title", "")
+            if d_str in ["산업", "정치", "경제", "사회", "문화", "국제", "금융", "증권", "건설부동산"]:
+                d_str += ("팀" if "팀" in rnk else "부")
+            if d_str:
+                r_copy["dept"] = d_str
+
+            cleaned_records.append(r_copy)
+
+        effective_records = cleaned_records
 
         if not effective_records:
             return {"total_records": 0, "new_records": 0, "unique_reporters": 0, "job_changes_detected": 0}
@@ -950,7 +1013,15 @@ class PersonnelTrackerEngine:
             for prev_rec in cluster["records"]:
                 p_date = prev_rec["date_obj"]
                 p_media = normalize_media_name(prev_rec["media"])
-                if abs((rec_date - p_date).days) <= 30 and p_media != rec_media:
+                days_gap = abs((rec_date - p_date).days)
+                if days_gap <= 30 and p_media != rec_media:
+                    # 계열사/동일 그룹 내 발령이거나, 14일 이내 동일/유사 부서 기사 중복 보도인 경우 충돌이 아님
+                    if are_group_affiliates(rec_media, p_media):
+                        continue
+                    if days_gap <= 14:
+                        p_dept = prev_rec.get("dept", "")
+                        if p_dept == rec_dept or (rec_domain == prev_rec.get("domain", "") and rec_rank == prev_rec.get("rank_title", "")):
+                            continue
                     conflict = True
                     break
             if conflict:
@@ -978,11 +1049,16 @@ class PersonnelTrackerEngine:
             # ----------------------------------------------------
             # 2순위: 알고리즘 휴리스틱 스코어링
             # ----------------------------------------------------
-            # CASE A: 동일 언론사 내의 이동/승진
-            if rec_media == last_media:
-                score += 50.0
-                if -1 <= rank_diff <= 2:
-                    score += 30.0  # 정상 유지 또는 승진
+            is_group_aff = are_group_affiliates(rec_media, last_media)
+            is_desk_lateral = (4 <= rec_level <= 6 and 4 <= last_level <= 6)
+            is_job_change = False
+            candidate_change_meta = None
+
+            # CASE A: 동일 언론사 또는 동일 미디어 그룹 계열사 내의 이동/승진/중복보도
+            if rec_media == last_media or is_group_aff:
+                score += 55.0
+                if -1 <= rank_diff <= 2 or is_desk_lateral:
+                    score += 30.0  # 정상 유지 또는 승진 (데스크급 보직 변경 포함)
                 elif rank_diff < -1:
                     score -= 70.0  # 급격한 강등(비정상)
                 elif rank_diff > 3:
@@ -1000,8 +1076,8 @@ class PersonnelTrackerEngine:
                 
                 is_recruit_action = record.get("action_type") in ["임용", "영입", "전입", "이동"]
                 # 언론계 이직 탐색 기간: 단기 이직부터 일반적인 2~4년 근속 후 이직(최대 5년, 1825일)까지 폭넓게 수용
-                is_within_transfer_window = (0 < days_diff <= 1825) or has_same_email
-                is_demoted = (rank_diff < 0)
+                is_within_transfer_window = (0 <= days_diff <= 1825) or has_same_email
+                is_demoted = (rank_diff < 0) and not is_desk_lateral
                 
                 # 부서 및 도메인 유사도 검증
                 domain_sim = calculate_domain_similarity(rec_domain, last_domain)
@@ -1017,8 +1093,8 @@ class PersonnelTrackerEngine:
                         score += 30.0
                     
                     # 직급 연속성 및 승진 가점
-                    if rank_diff == 0:
-                        # 동일 직급 유지 이직 (부장->부장, 국장->국장, 차장->차장 등 데스크/관리자급 수평 이직)
+                    if rank_diff == 0 or is_desk_lateral:
+                        # 동일 직급 유지 이직 또는 데스크급 수평 이직
                         score += 40.0
                     elif rank_diff == 1:
                         # 1단계 정상 승진 이직
@@ -1041,7 +1117,10 @@ class PersonnelTrackerEngine:
                     else:
                         score += 5.0
                     
-                    is_job_change = True
+                    is_group_transfer = are_group_affiliates(last_media, rec_media)
+                    # 동일 그룹/계열사 내에서 30일 이내 발생한 발령은 중복 보도 또는 내부 전보이므로 이직(Job Change) 리스트에는 등록하지 않음
+                    is_real_job_change = not (is_group_transfer and days_diff <= 30)
+                    is_job_change = is_real_job_change
                     candidate_change_meta = {
                         "name": name,
                         "from_media": last_media,
@@ -1058,7 +1137,7 @@ class PersonnelTrackerEngine:
                             f"{'6개월 내 타사 이동' if days_diff <= 180 else f'{round(days_diff/365, 1)}년 만의 타사 이직'}, 부서 유사도({int(domain_sim*100)}%), "
                             f"{'이메일 일치' if has_same_email else '직급 승진 및 유지'}"
                         )
-                    }
+                    } if is_real_job_change else None
                 else:
                     # 전입 기간 초과, 직급 강등, 또는 비유사 부서: 이직에서 제외 및 동명이인 분리 가중치
                     is_job_change = False
@@ -3211,8 +3290,9 @@ class MediaDatabase:
             return []
 
         def _dept_key(d: str) -> str:
-            s = re.sub(r"[〃\s]+", "", str(d).strip())
-            if s.endswith("부") and len(s) > 2:
+            s = re.sub(r'^[△▲▷▶○●■□◆◇◈▣◎⊙◐◑·ㆍ\-\*―━“"”’‘\'〃\s]+|[“"”’‘\'〃\s]+$', '', str(d).strip())
+            s = re.sub(r'[\s“"”’‘\'〃]+', '', s)
+            if (s.endswith("부") or s.endswith("팀")) and len(s) > 2:
                 return s[:-1]
             return s
         
@@ -3231,7 +3311,7 @@ class MediaDatabase:
             matched_idx = -1
             for idx, m in enumerate(merged):
                 same_name = (not m.get("name") or not rec_copy.get("name") or m.get("name", "").strip() == rec_copy.get("name", "").strip())
-                same_media = normalize_media_name(m.get("media", "")) == normalize_media_name(rec_copy.get("media", ""))
+                same_media = (normalize_media_name(m.get("media", "")) == normalize_media_name(rec_copy.get("media", "")) or are_group_affiliates(m.get("media", ""), rec_copy.get("media", "")))
                 same_dept = _dept_key(m.get("dept", "")) == _dept_key(rec_copy.get("dept", ""))
                 same_rank = m.get("rank_title", "").strip() == rec_copy.get("rank_title", "").strip()
 
@@ -3257,12 +3337,16 @@ class MediaDatabase:
                 if r_date_str and (not e_date_str or r_date_str < e_date_str):
                     existing["pub_date"] = r_date_str
                     if rec_copy.get("article_url"):
-                        existing["article_url"] = rec_copy["article_url"]
-                    if rec_copy.get("article_title"):
-                        existing["article_title"] = rec_copy["article_title"]
+                        existing["article_url"] = rec_copy.get("article_url")
+                        existing["article_title"] = rec_copy.get("article_title", "")
                 elif not existing.get("article_url") and rec_copy.get("article_url"):
                     existing["article_url"] = rec_copy["article_url"]
                     existing["article_title"] = rec_copy.get("article_title", "")
+
+                if normalize_media_name(existing.get("media", "")) in ["중앙일보", "이데일리", "머니투데이"] and normalize_media_name(rec_copy.get("media", "")) in ["이코노미스트", "일간스포츠", "머니투데이방송"]:
+                    existing["media"] = normalize_media_name(rec_copy["media"])
+                if not existing.get("dept") and rec_copy.get("dept"):
+                    existing["dept"] = rec_copy["dept"]
                 
                 # 부서명이 더 상세하고 정돈된 경우 갱신
                 cur_dept = str(existing.get("dept", ""))
