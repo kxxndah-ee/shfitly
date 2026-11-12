@@ -305,6 +305,23 @@ def normalize_media_name(raw_name: str) -> str:
     return name or "온라인뉴스"
 
 
+def is_same_media_company(m1: str, m2: str) -> bool:
+    """두 언론사명이 동일 언론사 또는 계열사/그룹인지 판별합니다."""
+    if not m1 or not m2:
+        return False
+    n1 = normalize_media_name(m1)
+    n2 = normalize_media_name(m2)
+    if n1 == n2:
+        return True
+    if n1 in n2 or n2 in n1:
+        return True
+    for base_name, aliases in MEDIA_GROUP_ALIASES.items():
+        all_group = [base_name] + aliases
+        if any(normalize_media_name(a) == n1 for a in all_group) and any(normalize_media_name(a) == n2 for a in all_group):
+            return True
+    return False
+
+
 def parse_rank_level(rank_title: str) -> int:
     """직급 텍스트에서 가장 높은 직급 서열(1~10)을 반환합니다."""
     if not rank_title:
@@ -328,18 +345,22 @@ MEDIA_KEYWORDS: List[str] = [
 ]
 
 KNOWN_MEDIA_NAMES: set = {
+    "뉴스1", "연합뉴스", "뉴시스", "중앙일보", "조선일보", "동아일보", "경향신문", "한겨레",
+    "한국일보", "문화일보", "세계일보", "국민일보", "서울신문", "내일신문",
+    "ytn", "YTN", "kbs", "KBS", "mbc", "MBC", "sbs", "SBS", "jtbc", "JTBC", "mbn", "MBN",
+    "tv조선", "TV조선", "채널a", "채널A", "연합뉴스TV", "연합뉴스tv",
     "한경", "매경", "서경", "아경", "매일경제", "한국경제", "서울경제", "아시아경제", "헤럴드경제",
-    "아시아투데이", "파이낸셜뉴스", "이투데이", "뉴스토마토", "머니s", "블로터", "더벨", "비즈한국",
-    "비즈니스워치", "글로벌이코노믹", "신아일보", "아주경제", "브릿지경제", "한국정경신문", "스마트에프엔",
+    "아시아투데이", "파이낸셜뉴스", "이투데이", "뉴스토마토", "머니s", "머니S", "블로터", "더벨", "비즈한국",
+    "비즈니스워치", "비즈워치", "글로벌이코노믹", "신아일보", "아주경제", "브릿지경제", "한국정경신문", "스마트에프엔",
     "fetv", "뉴스핌", "뉴스웨이", "뉴스포스트", "메트로신문", "에너지경제", "미디어펜", "미디어오늘", "pd저널", "PD저널",
     "기자협회", "한국기자협회", "기자협회보", "ebn", "EBN", "매경ax", "매경AX",
-    "머니투데이방송", "mtn", "MTN", "이코노미스트", "일간스포츠", "이데일리M", "이데일리m",
+    "머니투데이", "머니투데이방송", "mtn", "MTN", "이코노미스트", "일간스포츠", "이데일리", "이데일리M", "이데일리m",
     "딜사이트", "인포스탁데일리", "소비자가만드는신문", "조세일보", "디지털데일리", "지디넷코리아",
     "전자신문", "더구루", "뉴스락", "프레시안", "노컷뉴스", "쿠키뉴스", "세계비즈", "세계비즈앤스포츠월드"
 }
 
 NON_MEDIA_KEYWORDS: List[str] = [
-    "연구단", "사업단", "연구실", "추진단", "사업본부", "정보통신", "통신기술", "소프트웨어", "엔터테인먼트",
+    "인사혁신처", "법제처", "보훈처", "연구단", "사업단", "연구실", "추진단", "사업본부", "정보통신", "통신기술", "소프트웨어", "엔터테인먼트",
     "경기대", "서울대", "연세대", "고려대",
     "부처", "기획재정부", "교육부", "과기정통부", "외교부", "통일부", "법무부", "국방부", "행안부", "보훈부",
     "문체부", "농림축산", "농식품부", "산업통상", "산업부", "복지부", "환경부", "고용노동부", "노동부", "여가부",
@@ -413,17 +434,34 @@ def is_personnel_article_title(title: str, text: str = "", url: str = "") -> boo
     if url and any(sec in url for sec in ["sec_no=63", "/people/personnel", "/life-culture/press", "section_list_all"]):
         return True
 
+    # 연예/스포츠/포토 기사 URL 즉시 배제
+    if url and any(ex_domain in url for ex_domain in ["entertain.naver.com", "sports.naver.com"]):
+        return False
+
     t = html.unescape(str(title)).replace(" ", "")
 
     # 부고 및 사망 기사 엄격 배제
     if any(bg in t for bg in ["[부고]", "<부고>", "【부고】", "(부고)", "부고]", "별세", "발인", "빈소"]):
         return False
 
-    is_personnel = (
-        ("인사" in t) or ("승진" in t) or ("전보" in t) or ("발령" in t) or
-        ("보임" in t) or ("선임" in t) or ("임용" in t) or ("동정" in t)
-    )
-    if not is_personnel:
+    # 연예/포토/정치 기사의 비발령 '인사(손인사, 새해인사, 반체제인사 등)' 오인식 원천 차단
+    false_insa_tokens = [
+        "손인사", "첫인사", "눈인사", "목인사", "배꼽인사", "끝인사", "감사인사",
+        "새해인사", "추석인사", "설인사", "작별인사", "마지막인사", "반체제",
+        "야당인사", "여당인사", "정계인사", "유력인사", "주요인사", "고위인사", "정치인사",
+        "빛나는인사", "환한인사", "미소인사", "반가운인사", "고개숙여", "허리숙여", "악수인사",
+        "인사기사", "인사말", "인사를", "인사로", "인사하며", "인사했다"
+    ]
+    if any(fi in t for fi in false_insa_tokens):
+        return False
+
+    # 공식 발령 표기 기호 또는 명확한 인사 키워드 형식 확인
+    has_personnel_marker = any(b in title for b in [
+        "[인사]", "<인사>", "【인사】", "(인사)", "인사]", "[인사·동정]", "[인사/동정]",
+        "<승진>", "[승진]", "<전보>", "[전보]", "<보임>", "[보임]", "<선임>", "[선임]"
+    ]) or bool(re.search(r"(?:^|[\s<\[◇◆■●◎▲△▼▷▶])(?:인사|승진|전보|보임|선임|발령)(?:\s*[-:·|(\]>◆◇]|\b)", title))
+
+    if not has_personnel_marker:
         return False
 
     t_lower = html.unescape(str(title)).lower()
@@ -1814,6 +1852,12 @@ class OnlineNewsTracker:
         def is_valid_wire_article(tit: str, u: str, pr: str) -> bool:
             if not is_personnel_article_title(tit):
                 return False
+
+            # 만약 검색 대상 키워드가 특정 언론사명인 경우, 기사 제목에 해당 언론사 또는 언론사 태그가 포함되어야 함 (타 부처/기관 기사 배제)
+            if target_keyword and any(is_same_media_company(target_keyword, km) for km in KNOWN_MEDIA_NAMES):
+                if target_keyword not in tit and not any(km in tit for km in KNOWN_MEDIA_NAMES):
+                    return False
+
             # 통신 3사(뉴스1·연합뉴스·뉴시스), 중앙일보, 한국기자협회 기사 허용
             if pr in ["뉴스1", "연합뉴스", "뉴시스", "중앙일보", "한국기자협회", "기자협회"]:
                 return True
@@ -1955,16 +1999,26 @@ class OnlineNewsTracker:
         # 2. 다음 뉴스 검색 (뉴스1, 연합뉴스, 뉴시스, 중앙일보, 한국기자협회 기사 엄격 필터링 및 다중 페이지 수집)
         daum_queries = list(wire_queries)
         if target_keyword:
-            daum_queries = [
-                f'"{target_keyword}" "[인사]"',
-                f'"[인사] {target_keyword}"',
-                f'"[인사]{target_keyword}"',
-                f'"{target_keyword}" "[인사]" 뉴스1',
-                f'"{target_keyword}" "[인사]" 연합뉴스',
-                f'"{target_keyword}" "[인사]" 뉴시스',
-                f'"{target_keyword}" "[인사]" 중앙일보',
-                f'"{target_keyword}" "[인사]" 기자협회'
-            ] + daum_queries
+            tokens = [t for t in target_keyword.split() if t]
+            if len(tokens) > 1:
+                daum_queries = [
+                    f'{target_keyword} [인사]',
+                    f'"{target_keyword}" [인사]',
+                    f'[인사] {target_keyword}',
+                ] + [f'"{tok}" [인사]' for tok in tokens] + daum_queries
+            else:
+                daum_queries = [
+                    f'"{target_keyword}" "[인사]"',
+                    f'"[인사] {target_keyword}"',
+                    f'"[인사]{target_keyword}"',
+                    f'"{target_keyword}" "[인사]" 뉴스1',
+                    f'"{target_keyword}" "[인사]" 연합뉴스',
+                    f'"{target_keyword}" "[인사]" 뉴시스',
+                    f'"{target_keyword}" "[인사]" 중앙일보',
+                    f'"{target_keyword}" "[인사]" 기자협회'
+                ] + daum_queries
+
+        period_param = f"&period=u&sd={start_year}0101000000&ed={end_year}1231235959" if (start_year and end_year) else ""
 
         for wq in daum_queries:
             if len(articles) >= max_items:
@@ -1975,7 +2029,7 @@ class OnlineNewsTracker:
                 try:
                     daum_sort = "recency" if sort_first == "date" else "accuracy"
                     page_param = f"&p={p_num}" if p_num > 1 else ""
-                    daum_url = f"https://search.daum.net/search?w=news&q={quote(wq)}&sort={daum_sort}{page_param}"
+                    daum_url = f"https://search.daum.net/search?w=news&q={quote(wq)}&sort={daum_sort}{period_param}{page_param}"
                     resp = cls.get_session().get(daum_url, headers=cls.HEADERS, timeout=3.5, verify=False)
                     if resp.status_code == 200:
                         soup = BeautifulSoup(resp.content, "html.parser")
@@ -2010,104 +2064,6 @@ class OnlineNewsTracker:
                                     break
                 except Exception as e:
                     pass
-
-        # 3. 4대 매체 전용 섹션(한국기자협회·뉴스1·중앙일보) 직접 탐색 (포털 누락 원천 차단)
-        if len(articles) < max_items:
-            try:
-                for fetcher in [
-                    cls.fetch_journalist_personnel_section,
-                    cls.fetch_news1_personnel_section,
-                    cls.fetch_joongang_personnel_section,
-                ]:
-                    if len(articles) >= max_items:
-                        break
-                    sec_arts = fetcher(
-                        max_pages=3,
-                        target_keyword=target_keyword,
-                        seen_urls=seen_urls
-                    )
-                    for s_art in sec_arts:
-                        if len(articles) >= max_items:
-                            break
-                        articles.append(s_art)
-            except Exception:
-                pass
-
-        # 5. 구글 뉴스 RSS: 포털 결과가 전혀 없을 때만 최후 수단으로 보조 검색
-        if not articles:
-            if target_keyword:
-                rss_targets = [
-                    (f'"{target_keyword}" "[인사]" site:news1.kr', "뉴스1"),
-                    (f'"{target_keyword}" "[인사]" site:yna.co.kr', "연합뉴스"),
-                    (f'"{target_keyword}" "[인사]" site:newsis.com', "뉴시스"),
-                    (f'"{target_keyword}" "[인사]" site:joongang.co.kr', "중앙일보"),
-                    (f'"{target_keyword}" "[인사]" site:journalist.or.kr', "한국기자협회")
-                ]
-            else:
-                rss_targets = [
-                    (f'"{clean_q}" site:news1.kr', "뉴스1"),
-                    (f'"{clean_q}" site:yna.co.kr', "연합뉴스"),
-                    (f'"{clean_q}" site:newsis.com', "뉴시스"),
-                    (f'"{clean_q}" site:joongang.co.kr', "중앙일보"),
-                    (f'"{clean_q}" site:journalist.or.kr', "한국기자협회")
-                ]
-
-            for q_rss, default_press in rss_targets:
-                if len(articles) >= max_items:
-                    break
-                try:
-                    g_url = f"https://news.google.com/rss/search?q={quote(q_rss)}&hl=ko&gl=KR&ceid=KR:ko"
-                    g_resp = cls.get_session().get(g_url, headers=cls.HEADERS, timeout=3.5, verify=False)
-                    if g_resp.status_code == 200:
-                        import xml.etree.ElementTree as ET
-                        root = ET.fromstring(g_resp.content)
-                        for item in root.findall(".//item"):
-                            tit_elem = item.find("title")
-                            link_elem = item.find("link")
-                            pub_elem = item.find("pubDate")
-                            if tit_elem is not None and link_elem is not None:
-                                raw_title = tit_elem.text or ""
-                                link = link_elem.text or ""
-                                date_str = ""
-                                if pub_elem is not None and pub_elem.text:
-                                    try:
-                                        import email.utils
-                                        dt = email.utils.parsedate_to_datetime(pub_elem.text)
-                                        date_str = dt.strftime("%Y-%m-%d")
-                                        if dt.year < start_year or dt.year > end_year:
-                                            continue
-                                    except Exception:
-                                        pass
-
-                                wire_media = default_press
-                                if " - " in raw_title:
-                                    parts = raw_title.rsplit(" - ", 1)
-                                    title = parts[0].strip()
-                                    if "뉴스1" in parts[1]:
-                                        wire_media = "뉴스1"
-                                    elif "연합뉴스" in parts[1]:
-                                        wire_media = "연합뉴스"
-                                    elif "뉴시스" in parts[1]:
-                                        wire_media = "뉴시스"
-                                    elif "중앙일보" in parts[1]:
-                                        wire_media = "중앙일보"
-                                    elif "기자협회" in parts[1]:
-                                        wire_media = "한국기자협회"
-                                else:
-                                    title = raw_title.strip()
-
-                                if link and link not in seen_urls and is_valid_wire_article(title, link, wire_media):
-                                    seen_urls.add(link)
-                                    articles.append({
-                                        "title": title,
-                                        "url": link,
-                                        "media": wire_media,
-                                        "date_text": date_str
-                                    })
-                                    if len(articles) >= max_items:
-                                        break
-                except Exception as e:
-                    print(f"[Google RSS Wire Search Error] {e}")
 
         return articles
 
@@ -2270,39 +2226,36 @@ class OnlineNewsTracker:
         if not name:
             return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
 
-        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정:
+        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 세부 분할 구간 설정:
         intervals = [
-            (2024, 2026, "date"),
-            (2020, 2023, "date"),
-            (2010, 2019, "sim"),
-            (1998, 2009, "sim"),
-            (1986, 1997, "sim"),
-            (1965, 1985, "sim")
+            (2025, 2026, "date"),
+            (2023, 2024, "date"),
+            (2021, 2022, "date"),
+            (2018, 2020, "date"),
+            (2014, 2017, "date"),
+            (2008, 2013, "sim"),
+            (1998, 2007, "sim"),
+            (1965, 1997, "sim")
         ]
 
         # 1단계: 병렬 검색 쿼리 작업 리스트 구성
         search_tasks = []
         for sy, ey, sort_type in intervals:
             q_list = [
+                f'"{name}" [인사]',
+                f'[인사] "{name}"',
                 f'{name} [인사] 뉴스1',
                 f'{name} [인사] 연합뉴스',
                 f'{name} [인사] 중앙일보',
                 f'{name} [인사] 기자협회',
-                f'[인사] "{name}"'
             ]
-            if ey >= 2020:
+            if ey >= 2018:
                 q_list.extend([
-                    f'{name} "부장" [인사] 뉴스1',
-                    f'{name} "부장" [인사] 연합뉴스',
-                    f'{name} "부장" [인사] 중앙일보',
-                    f'{name} "부장대우" [인사] 연합뉴스',
-                    f'{name} "차장" [인사] 뉴스1',
-                    f'{name} "차장" [인사] 연합뉴스',
-                    f'{name} "차장" [인사] 중앙일보',
-                    f'{name} "차장대우" [인사] 연합뉴스',
-                    f'{name} "팀장" [인사] 연합뉴스',
-                    f'{name} "기자" [인사] 연합뉴스',
-                    f'{name} "국장" [인사] 연합뉴스',
+                    f'{name} "부장" [인사]',
+                    f'{name} "차장" [인사]',
+                    f'{name} "팀장" [인사]',
+                    f'{name} "국장" [인사]',
+                    f'{name} "기자" [인사]',
                 ])
             for q in q_list:
                 search_tasks.append((q, sy, ey, sort_type))
@@ -2333,7 +2286,7 @@ class OnlineNewsTracker:
                 return []
             q, sy, ey, st = task
             return cls.search_online_articles(
-                q, max_items=8, client_id=client_id, client_secret=client_secret,
+                q, max_items=25, client_id=client_id, client_secret=client_secret,
                 start_year=sy, end_year=ey, sort_first=st
             )
 
@@ -2481,14 +2434,16 @@ class OnlineNewsTracker:
         if not media_clean and not dept_clean and not rank_clean:
             return {"found_records": 0, "articles_searched": 0, "message": "매체명, 부서명, 또는 직급명을 입력하세요."}
 
-        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정
+        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 세부 분할 구간 설정
         intervals = [
-            (2024, 2026, "date"),
-            (2020, 2023, "date"),
-            (2010, 2019, "sim"),
-            (1998, 2009, "sim"),
-            (1986, 1997, "sim"),
-            (1965, 1985, "sim")
+            (2025, 2026, "date"),
+            (2023, 2024, "date"),
+            (2021, 2022, "date"),
+            (2018, 2020, "date"),
+            (2014, 2017, "date"),
+            (2008, 2013, "sim"),
+            (1998, 2007, "sim"),
+            (1965, 1997, "sim")
         ]
 
         # 검색 쿼리 구성 (언론사 및 뉴스1/연합뉴스/중앙일보 타깃)
@@ -2497,22 +2452,18 @@ class OnlineNewsTracker:
             q_list = []
             if media_clean and rank_clean and dept_clean:
                 q_list.extend([
-                    f'{media_clean} "{dept_clean}부장" [인사]',
-                    f'{media_clean} "{dept_clean}부" "{rank_clean}" [인사]',
-                    f'{media_clean} "{dept_clean}" "{rank_clean}" [인사]',
-                    f'{media_clean} "{dept_clean}" "부장직대" [인사]',
-                    f'{media_clean} "{dept_clean}" "부장대우" [인사]',
-                    f'"{media_clean}" "{dept_clean}부장"',
-                    f'"{media_clean}" "{dept_clean}" "[인사]"',
-                    f'{media_clean} "{dept_clean}" [인사]',
+                    f'"[인사] {media_clean}"',
+                    f'"[인사]{media_clean}"',
+                    f'"{media_clean}" [인사]',
                     f'{media_clean} {dept_clean} [인사]',
+                    f'{media_clean} "{dept_clean}" [인사]',
+                    f'{media_clean} "{dept_clean}부장" [인사]',
                     f'{media_clean} "{rank_clean}" [인사]',
-                    f'{media_clean} [인사]',
-                    f'[인사] {media_clean}',
                     f'[인사] <{media_clean}>',
                     f'{media_clean} [인사] 뉴스1',
                     f'{media_clean} [인사] 연합뉴스',
                     f'{media_clean} [인사] 중앙일보',
+                    f'{media_clean} [인사] 기자협회',
                 ])
             elif media_clean and rank_clean:
                 q_list.extend([
@@ -2635,7 +2586,7 @@ class OnlineNewsTracker:
                 return []
             q, sy, ey, st = task
             return cls.search_online_articles(
-                q, max_items=10, client_id=client_id, client_secret=client_secret,
+                q, max_items=25, client_id=client_id, client_secret=client_secret,
                 start_year=sy, end_year=ey, sort_first=st
             )
 
@@ -2709,9 +2660,7 @@ class OnlineNewsTracker:
                 is_target_media = False
                 if not media_clean:
                     is_target_media = True
-                elif media_clean in rec_med or rec_med in media_clean:
-                    is_target_media = True
-                elif media_clean in MEDIA_GROUP_ALIASES and any(alias in rec_med for alias in MEDIA_GROUP_ALIASES[media_clean]):
+                elif is_same_media_company(media_clean, rec_med):
                     is_target_media = True
                     r["media"] = normalize_media_name(media_clean)
                 elif rec_med in ["온라인뉴스", "미상", ""] and media_clean in art.get("title", "") and not any(kw in art.get("title", "") for kw in ["종합", "외", "등", "동향"]):
@@ -2727,12 +2676,30 @@ class OnlineNewsTracker:
             engine = PersonnelTrackerEngine()
             engine_res = engine.process_records(all_parsed_records, append=True)
 
+        def matches_dept(target_d: str, record_d: str) -> bool:
+            if not target_d:
+                return True
+            if not record_d:
+                return False
+            td = target_d.strip()
+            rd = record_d.strip()
+            if td in rd or rd in td:
+                return True
+            sub_tokens = [td[:2], td[2:]] if len(td) == 5 else ([t for t in re.split(r"[/·,\s]+", td) if t])
+            return any(st in rd for st in sub_tokens if len(st) >= 2)
+
+        def matches_rank(target_r: str, record_r: str, record_d: str = "") -> bool:
+            if not target_r:
+                return True
+            tr = target_r.strip()
+            return tr in record_r or tr in record_d or record_r in tr
+
         # 2. 사용자가 요청한 조건(media, dept, rank)에 부합하는 레코드 필터링
         exact_matches = [
             r for r in all_parsed_records
-            if (not media_clean or media_clean in r.get("media", ""))
-            and (not dept_clean or dept_clean in r.get("dept", ""))
-            and (not rank_clean or rank_clean in r.get("rank_title", "") or rank_clean in r.get("dept", ""))
+            if (not media_clean or is_same_media_company(media_clean, r.get("media", "")))
+            and matches_dept(dept_clean, r.get("dept", ""))
+            and matches_rank(rank_clean, r.get("rank_title", ""), r.get("dept", ""))
         ]
 
         # 동일 부서 타 직급 매칭 (예: 더벨 건설부동산부 차장 전기룡)
@@ -2740,7 +2707,7 @@ class OnlineNewsTracker:
         if not exact_matches and media_clean and dept_clean:
             dept_matches = [
                 r for r in all_parsed_records
-                if media_clean in r.get("media", "") and dept_clean in r.get("dept", "")
+                if is_same_media_company(media_clean, r.get("media", "")) and matches_dept(dept_clean, r.get("dept", ""))
             ]
 
         # 동일 언론사 전체 매칭
@@ -2813,44 +2780,36 @@ class OnlineNewsTracker:
         if not media_clean:
             return cls.track_reporter_online(reporter_name=name_clean, client_id=client_id, client_secret=client_secret, stop_event=stop_event)
 
-        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 분할 구간 설정
+        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 세부 분할 구간 설정
         intervals = [
-            (2024, 2026, "date"),
-            (2020, 2023, "date"),
-            (2010, 2019, "sim"),
-            (1998, 2009, "sim"),
-            (1986, 1997, "sim"),
-            (1965, 1985, "sim")
+            (2025, 2026, "date"),
+            (2023, 2024, "date"),
+            (2021, 2022, "date"),
+            (2018, 2020, "date"),
+            (2014, 2017, "date"),
+            (2008, 2013, "sim"),
+            (1998, 2007, "sim"),
+            (1965, 1997, "sim")
         ]
 
         search_tasks = []
         for sy, ey, sort_type in intervals:
             q_list = [
-                f'{media_clean} {name_clean} [인사]',
+                f'"{name_clean}" [인사] {media_clean}',
+                f'{media_clean} "{name_clean}" [인사]',
                 f'"{media_clean}" "{name_clean}" [인사]',
-                f'{media_clean} [인사] "{name_clean}"',
-                f'{name_clean} [인사] {media_clean}',
-                f'{media_clean} {name_clean} [인사] 뉴스1',
-                f'{media_clean} {name_clean} [인사] 연합뉴스',
-                f'{media_clean} {name_clean} [인사] 중앙일보',
-                f'{media_clean} {name_clean} [인사] 기자협회',
-                f'[인사] <{media_clean}> {name_clean}',
-                f'[인사] <중앙일보> {name_clean}',
-                f'[인사] ◇ {media_clean} {name_clean}',
-                f'{name_clean} [인사] 뉴스1',
-                f'{name_clean} [인사] 연합뉴스',
-                f'{name_clean} [인사] 중앙일보',
-                f'{name_clean} [인사] 기자협회',
+                f'[인사] <{media_clean}> "{name_clean}"',
+                f'"{name_clean}" [인사] 뉴스1',
+                f'"{name_clean}" [인사] 연합뉴스',
+                f'"{name_clean}" [인사] 중앙일보',
+                f'"{name_clean}" [인사] 기자협회',
             ]
-            if ey >= 2020:
+            if ey >= 2018:
                 q_list.extend([
-                    f'{media_clean} {name_clean} "부장" [인사]',
-                    f'{media_clean} {name_clean} "부장" [인사] 중앙일보',
-                    f'{media_clean} {name_clean} "차장" [인사]',
-                    f'{media_clean} {name_clean} "차장" [인사] 중앙일보',
-                    f'{media_clean} {name_clean} "팀장" [인사]',
-                    f'{media_clean} {name_clean} "기자" [인사]',
-                    f'{media_clean} {name_clean} "국장" [인사]',
+                    f'{media_clean} "{name_clean}" "부장" [인사]',
+                    f'{media_clean} "{name_clean}" "차장" [인사]',
+                    f'{media_clean} "{name_clean}" "팀장" [인사]',
+                    f'{media_clean} "{name_clean}" "국장" [인사]',
                 ])
             for q in q_list:
                 search_tasks.append((q, sy, ey, sort_type))
@@ -2876,7 +2835,7 @@ class OnlineNewsTracker:
                 return []
             q, sy, ey, st = task
             return cls.search_online_articles(
-                q, max_items=8, client_id=client_id, client_secret=client_secret,
+                q, max_items=25, client_id=client_id, client_secret=client_secret,
                 start_year=sy, end_year=ey, sort_first=st
             )
 
