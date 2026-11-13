@@ -1517,6 +1517,61 @@ class OnlineNewsTracker:
         return articles
 
     @classmethod
+    def fetch_yonhap_personnel_section(
+        cls,
+        max_pages: int = 5,
+        target_keyword: str = "",
+        seen_urls: Optional[Set[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        연합뉴스(https://www.yna.co.kr) 공식 인사 전용 섹션(people/personnel)에서
+        최신 및 아카이브 공식 인사 기사 목록을 직접 탐색하여 반환합니다.
+        """
+        articles: List[Dict[str, Any]] = []
+        if seen_urls is None:
+            seen_urls = set()
+
+        keyword_clean = target_keyword.strip() if target_keyword else ""
+        is_general = len(keyword_clean) == 0
+
+        for page in range(1, max_pages + 1):
+            url = f"https://www.yna.co.kr/people/personnel/{page}"
+            try:
+                resp = cls.get_session().get(url, headers=cls.HEADERS, timeout=5.0, verify=False)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.content, "html.parser")
+                    for a_elem in soup.select("div.item-box01 a, ul.list a, a[href*='/view/AKR']"):
+                        href = a_elem.get("href", "")
+                        title = html.unescape(a_elem.get_text(strip=True))
+                        if not href or "/view/AKR" not in href or len(title) < 3:
+                            continue
+                        full_href = href if href.startswith("http") else f"https:{href}" if href.startswith("//") else f"https://www.yna.co.kr{href}"
+                        if full_href in seen_urls:
+                            continue
+                        if not is_personnel_article_title(title, url=full_href):
+                            continue
+                        if not is_general:
+                            is_title_relevant = (
+                                keyword_clean in title
+                                or any(m in title for m in ["연합뉴스", "일보", "신문", "방송", "뉴스", "통신", "미디어", "경제"])
+                            )
+                            if not is_title_relevant:
+                                continue
+
+                        seen_urls.add(full_href)
+                        m_date = re.search(r"AKR(19[6-9]\d|20[0-3]\d)(\d{2})(\d{2})", full_href)
+                        date_str = f"{m_date.group(1)}-{m_date.group(2)}-{m_date.group(3)}" if m_date else ""
+                        articles.append({
+                            "title": title,
+                            "url": full_href,
+                            "media": "연합뉴스",
+                            "date_text": date_str
+                        })
+            except Exception:
+                pass
+        return articles
+
+    @classmethod
     def fetch_journalist_personnel_section(
         cls,
         max_pages: int = 5,
@@ -2431,6 +2486,29 @@ class OnlineNewsTracker:
         dept_clean = dept.strip() if dept else ""
         rank_clean = rank.strip() if rank else ""
 
+        # 복합 검색어 자동 분리 (예: media="뉴스1 건설부동산" -> media="뉴스1", dept="건설부동산")
+        if media_clean and not dept_clean:
+            for km in sorted(KNOWN_MEDIA_NAMES, key=len, reverse=True):
+                if media_clean.startswith(km) and len(media_clean) > len(km):
+                    remainder = media_clean[len(km):].strip()
+                    if remainder:
+                        media_clean = km
+                        dept_clean = remainder
+                        break
+            if not dept_clean and " " in media_clean:
+                parts = media_clean.split(None, 1)
+                if any(is_same_media_company(parts[0], km) for km in KNOWN_MEDIA_NAMES) or parts[0] in KNOWN_MEDIA_NAMES:
+                    media_clean = parts[0]
+                    dept_clean = parts[1]
+
+        # 매체명과 부서명이 서로 바뀐 경우 자동 보정
+        if dept_clean and not media_clean:
+            if any(is_same_media_company(dept_clean, km) for km in KNOWN_MEDIA_NAMES) or dept_clean in KNOWN_MEDIA_NAMES:
+                media_clean, dept_clean = dept_clean, ""
+        elif dept_clean and media_clean:
+            if any(is_same_media_company(dept_clean, km) for km in KNOWN_MEDIA_NAMES) and not any(is_same_media_company(media_clean, km) for km in KNOWN_MEDIA_NAMES):
+                media_clean, dept_clean = dept_clean, media_clean
+
         if not media_clean and not dept_clean and not rank_clean:
             return {"found_records": 0, "articles_searched": 0, "message": "매체명, 부서명, 또는 직급명을 입력하세요."}
 
@@ -2485,6 +2563,9 @@ class OnlineNewsTracker:
                         ])
             elif media_clean and dept_clean:
                 q_list.extend([
+                    f'"{media_clean}" [인사]',
+                    f'"[인사] {media_clean}"',
+                    f'"[인사]{media_clean}"',
                     f'{media_clean} "{dept_clean}" [인사]',
                     f'{media_clean} {dept_clean} [인사]',
                     f'{media_clean} [인사]',
@@ -2493,6 +2574,7 @@ class OnlineNewsTracker:
                     f'{media_clean} [인사] 뉴스1',
                     f'{media_clean} [인사] 연합뉴스',
                     f'{media_clean} [인사] 중앙일보',
+                    f'{media_clean} [인사] 기자협회',
                 ])
                 if media_clean in MEDIA_GROUP_ALIASES:
                     for g_alias in MEDIA_GROUP_ALIASES[media_clean]:
@@ -2561,10 +2643,11 @@ class OnlineNewsTracker:
 
         candidate_articles: Dict[str, Dict[str, Any]] = {}
 
-        # 4대 매체 전용 섹션(한국기자협회·뉴스1·중앙일보) 직접 보조 탐색
+        # 4대 매체 전용 섹션(연합뉴스·한국기자협회·뉴스1·중앙일보) 직접 보조 탐색
         try:
             kw_target = media_clean or dept_clean or rank_clean
             for direct_fetcher in [
+                cls.fetch_yonhap_personnel_section,
                 cls.fetch_journalist_personnel_section,
                 cls.fetch_news1_personnel_section,
                 cls.fetch_joongang_personnel_section,
@@ -3542,6 +3625,20 @@ class MediaDatabase:
             return self.deduplicate_timeline_records(rows, sort_desc=True)
 
     def search_reporters(self, name: str = "", media: str = "", dept: str = "", rank: str = "") -> List[Dict[str, Any]]:
+        # 복합 검색어 자동 분리 (예: media="뉴스1 건설부동산" -> media="뉴스1", dept="건설부동산")
+        if media and not dept:
+            for km in sorted(KNOWN_MEDIA_NAMES, key=len, reverse=True):
+                if media.startswith(km) and len(media) > len(km):
+                    remainder = media[len(km):].strip()
+                    if remainder:
+                        media = km
+                        dept = remainder
+                        break
+            if not dept and " " in media:
+                parts = media.split(None, 1)
+                if any(is_same_media_company(parts[0], km) for km in KNOWN_MEDIA_NAMES) or parts[0] in KNOWN_MEDIA_NAMES:
+                    media, dept = parts[0], parts[1]
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
             query = "SELECT DISTINCT r.* FROM reporters r WHERE 1=1"
@@ -3550,50 +3647,64 @@ class MediaDatabase:
                 query += " AND r.name LIKE ?"
                 params.append(f"%{name}%")
 
+            clean_d = dept.strip() if dept else ""
+            is_const_re = ("건설" in clean_d and "부동산" in clean_d)
+
             if dept and rank:
-                # 부서와 직급이 모두 지정된 경우: 동일 발령 레코드에서 부서와 직급을 모두 만족하거나, 현재 직책에서 부서와 직급을 모두 만족해야 함
-                query += """ AND (
+                d_pr_sql = "(pr.dept LIKE ? OR pr.dept LIKE ? OR pr.dept LIKE ?)" if is_const_re else "pr.dept LIKE ?"
+                d_pr_p = ["%건설부동산%", "%건설부%", "%부동산부%"] if is_const_re else [f"%{dept}%"]
+                d_cur_sql = "(r.current_dept LIKE ? OR r.current_dept LIKE ? OR r.current_dept LIKE ?)" if is_const_re else "r.current_dept LIKE ?"
+                d_cur_p = ["%건설부동산%", "%건설부%", "%부동산부%"] if is_const_re else [f"%{dept}%"]
+
+                query += f""" AND (
                     EXISTS (
                         SELECT 1 FROM personnel_records pr 
                         WHERE pr.reporter_id = r.reporter_id
                     """
                 if media:
-                    query += " AND pr.media LIKE ?"
-                    params.append(f"%{media}%")
-                query += """ AND pr.dept LIKE ? 
+                    query += " AND (pr.media LIKE ? OR pr.media LIKE ?)"
+                    params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                query += f""" AND {d_pr_sql} 
                          AND (pr.rank_title LIKE ? OR pr.dept LIKE ?)
                     )
                     OR (
                     """
-                params.extend([f"%{dept}%", f"%{rank}%", f"%{rank}%"])
+                params.extend(d_pr_p)
+                params.extend([f"%{rank}%", f"%{rank}%"])
                 if media:
-                    query += " r.current_media LIKE ? AND "
-                    params.append(f"%{media}%")
-                query += """ r.current_dept LIKE ? AND r.current_rank LIKE ?
+                    query += " (r.current_media LIKE ? OR r.current_media LIKE ?) AND "
+                    params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                query += f""" {d_cur_sql} AND r.current_rank LIKE ?
                     )
                 )"""
-                params.extend([f"%{dept}%", f"%{rank}%"])
+                params.extend(d_cur_p)
+                params.append(f"%{rank}%")
             elif dept:
-                query += """ AND (
+                d_pr_sql = "(pr.dept LIKE ? OR pr.dept LIKE ? OR pr.dept LIKE ?)" if is_const_re else "pr.dept LIKE ?"
+                d_pr_p = ["%건설부동산%", "%건설부%", "%부동산부%"] if is_const_re else [f"%{dept}%"]
+                d_cur_sql = "(r.current_dept LIKE ? OR r.current_dept LIKE ? OR r.current_dept LIKE ?)" if is_const_re else "r.current_dept LIKE ?"
+                d_cur_p = ["%건설부동산%", "%건설부%", "%부동산부%"] if is_const_re else [f"%{dept}%"]
+
+                query += f""" AND (
                     EXISTS (
                         SELECT 1 FROM personnel_records pr 
                         WHERE pr.reporter_id = r.reporter_id
                     """
                 if media:
-                    query += " AND pr.media LIKE ?"
-                    params.append(f"%{media}%")
-                query += """ AND pr.dept LIKE ?
+                    query += " AND (pr.media LIKE ? OR pr.media LIKE ?)"
+                    params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                query += f""" AND {d_pr_sql}
                     )
                     OR (
                     """
-                params.append(f"%{dept}%")
+                params.extend(d_pr_p)
                 if media:
-                    query += " r.current_media LIKE ? AND "
-                    params.append(f"%{media}%")
-                query += """ r.current_dept LIKE ?
+                    query += " (r.current_media LIKE ? OR r.current_media LIKE ?) AND "
+                    params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                query += f""" {d_cur_sql}
                     )
                 )"""
-                params.append(f"%{dept}%")
+                params.extend(d_cur_p)
             elif rank:
                 query += """ AND (
                     EXISTS (
@@ -3601,32 +3712,47 @@ class MediaDatabase:
                         WHERE pr.reporter_id = r.reporter_id
                     """
                 if media:
-                    query += " AND pr.media LIKE ?"
-                    params.append(f"%{media}%")
+                    query += " AND (pr.media LIKE ? OR pr.media LIKE ?)"
+                    params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
                 query += """ AND (pr.rank_title LIKE ? OR pr.dept LIKE ?)
                     )
                     OR (
                     """
                 params.extend([f"%{rank}%", f"%{rank}%"])
                 if media:
-                    query += " r.current_media LIKE ? AND "
-                    params.append(f"%{media}%")
+                    query += " (r.current_media LIKE ? OR r.current_media LIKE ?) AND "
+                    params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
                 query += """ r.current_rank LIKE ?
                     )
                 )"""
                 params.append(f"%{rank}%")
             elif media:
+                m_norm = normalize_media_name(media)
                 query += """ AND (
-                    r.current_media LIKE ? OR 
-                    EXISTS (SELECT 1 FROM personnel_records pr WHERE pr.reporter_id = r.reporter_id AND pr.media LIKE ?)
+                    r.current_media LIKE ? OR r.current_media LIKE ? OR 
+                    EXISTS (SELECT 1 FROM personnel_records pr WHERE pr.reporter_id = r.reporter_id AND (pr.media LIKE ? OR pr.media LIKE ?))
                 )"""
-                params.extend([f"%{media}%", f"%{media}%"])
+                params.extend([f"%{media}%", f"%{m_norm}%", f"%{media}%", f"%{m_norm}%"])
 
             query += " ORDER BY r.last_seen DESC"
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
 
     def search_records(self, name: str = "", media: str = "", dept: str = "", rank: str = "", limit: int = 2000) -> List[Dict[str, Any]]:
+        # 복합 검색어 자동 분리 (예: media="뉴스1 건설부동산" -> media="뉴스1", dept="건설부동산")
+        if media and not dept:
+            for km in sorted(KNOWN_MEDIA_NAMES, key=len, reverse=True):
+                if media.startswith(km) and len(media) > len(km):
+                    remainder = media[len(km):].strip()
+                    if remainder:
+                        media = km
+                        dept = remainder
+                        break
+            if not dept and " " in media:
+                parts = media.split(None, 1)
+                if any(is_same_media_company(parts[0], km) for km in KNOWN_MEDIA_NAMES) or parts[0] in KNOWN_MEDIA_NAMES:
+                    media, dept = parts[0], parts[1]
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
             query = "SELECT * FROM personnel_records WHERE 1=1"
@@ -3635,11 +3761,17 @@ class MediaDatabase:
                 query += " AND name LIKE ?"
                 params.append(f"%{name}%")
             if media:
-                query += " AND media LIKE ?"
-                params.append(f"%{media}%")
+                m_norm = normalize_media_name(media)
+                query += " AND (media LIKE ? OR media LIKE ?)"
+                params.extend([f"%{media}%", f"%{m_norm}%"])
             if dept:
-                query += " AND dept LIKE ?"
-                params.append(f"%{dept}%")
+                clean_d = dept.strip()
+                if "건설" in clean_d and "부동산" in clean_d:
+                    query += " AND (dept LIKE ? OR dept LIKE ? OR dept LIKE ?)"
+                    params.extend(["%건설부동산%", "%건설부%", "%부동산부%"])
+                else:
+                    query += " AND dept LIKE ?"
+                    params.append(f"%{dept}%")
             if rank:
                 query += " AND (rank_title LIKE ? OR dept LIKE ?)"
                 params.extend([f"%{rank}%", f"%{rank}%"])

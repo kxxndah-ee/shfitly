@@ -14,6 +14,7 @@ import time
 import datetime
 import threading
 import base64
+from typing import Dict, List, Any, Optional, Set, Tuple
 from pathlib import Path
 from PIL import Image
 import pandas as pd
@@ -34,7 +35,9 @@ from data_pipeline import (
     is_media_organization,
     is_excluded_department,
     DOMAIN_TAXONOMY,
-    RANK_HIERARCHY
+    RANK_HIERARCHY,
+    KNOWN_MEDIA_NAMES,
+    is_same_media_company
 )
 
 
@@ -729,6 +732,29 @@ with tab_search:
                     m_clean = media_input.strip()
                     d_clean = dept_input.strip()
                     r_clean = rank_input.strip()
+
+                    # '뉴스1 건설부동산'을 매체명 칸에 한 번에 입력한 경우 자동 분리
+                    if m_clean and not d_clean:
+                        for km in sorted(KNOWN_MEDIA_NAMES, key=len, reverse=True):
+                            if m_clean.startswith(km) and len(m_clean) > len(km):
+                                remainder = m_clean[len(km):].strip()
+                                if remainder:
+                                    m_clean = km
+                                    d_clean = remainder
+                                    break
+                        if not d_clean and " " in m_clean:
+                            parts = m_clean.split(None, 1)
+                            if any(is_same_media_company(parts[0], km) for km in KNOWN_MEDIA_NAMES) or parts[0] in KNOWN_MEDIA_NAMES:
+                                m_clean = parts[0]
+                                d_clean = parts[1]
+
+                    if d_clean and not m_clean:
+                        if any(is_same_media_company(d_clean, km) for km in KNOWN_MEDIA_NAMES) or d_clean in KNOWN_MEDIA_NAMES:
+                            m_clean, d_clean = d_clean, ""
+                    elif d_clean and m_clean:
+                        if any(is_same_media_company(d_clean, km) for km in KNOWN_MEDIA_NAMES) and not any(is_same_media_company(m_clean, km) for km in KNOWN_MEDIA_NAMES):
+                            m_clean, d_clean = d_clean, m_clean
+
                     st.session_state["filter_media_val"] = m_clean
                     st.session_state["filter_dept_val"] = d_clean
                     st.session_state["filter_rank_val"] = r_clean
@@ -1532,6 +1558,48 @@ with tab_search:
             </div>
             """)
 
+            # 4대 핵심 부서 인력 통계 KPI 카드
+            unique_names = set(r.get("name") for r in unique_matched if r.get("name"))
+            dates = [str(r.get("pub_date", ""))[:10] for r in unique_matched if r.get("pub_date")]
+            d_min = min(dates)[:7] if dates else ""
+            d_max = max(dates)[:7] if dates else ""
+            promo_cnt = sum(1 for r in unique_matched if "승진" in r.get("action_type", ""))
+            trans_cnt = sum(1 for r in unique_matched if any(k in r.get("action_type", "") for k in ["전보", "이동", "보임", "발령"]))
+
+            kcol1, kcol2, kcol3, kcol4 = st.columns(4)
+            with kcol1:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">역대 소속 언론인</div>
+                    <div class="metric-value">{len(unique_names)}명</div>
+                    <div class="metric-sub">발령 기준 고유 인물 수</div>
+                </div>
+                """)
+            with kcol2:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">아카이브 총 발령 건수</div>
+                    <div class="metric-value">{len(unique_matched)}건</div>
+                    <div class="metric-sub">중복 병합 및 정규화 완료</div>
+                </div>
+                """)
+            with kcol3:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">데이터 추적 기간</div>
+                    <div class="metric-value" style="font-size:1.4rem;">{d_min} ~ {d_max}</div>
+                    <div class="metric-sub">공식 인사 아카이브</div>
+                </div>
+                """)
+            with kcol4:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">승진 / 보직 이동</div>
+                    <div class="metric-value">{promo_cnt} / {trans_cnt}건</div>
+                    <div class="metric-sub">인사 변동 내역</div>
+                </div>
+                """)
+
             df_display = pd.DataFrame([{
                 "발령일자": r.get("pub_date", ""),
                 "언론사": normalize_media_name(r.get("media", "")),
@@ -1579,13 +1647,18 @@ with tab_search:
                 </div>
                 """)
 
+                dept_timelines = {
+                    r["reporter_id"]: db.get_reporter_timeline(r["reporter_id"])
+                    for r in filtered_reporters
+                }
+
                 df_dept_reps = pd.DataFrame([{
                     "성명": r.get("name", ""),
                     "소속 언론사": normalize_media_name(r.get("current_media", "")),
                     "부서": r.get("current_dept", ""),
                     "직급": r.get("current_rank", ""),
                     "활동 추적 기간": f"{str(r.get('first_seen', ''))[:7]} ~ {str(r.get('last_seen', ''))[:7]}" if r.get('first_seen') else "",
-                    "발령 기록": f"{r.get('record_count', 0)}건"
+                    "발령 기록": f"{len(dept_timelines.get(r.get('reporter_id'), []))}건"
                 } for r in filtered_reporters])
                 st.dataframe(df_dept_reps, use_container_width=True, hide_index=True)
 
@@ -1596,9 +1669,17 @@ with tab_search:
                         for idx, r_item in enumerate(filtered_reporters):
                             with rep_tabs[idx]:
                                 sel_rep = db.get_reporter(r_item["reporter_id"]) or r_item
-                                render_single_reporter_profile(sel_rep, db.get_reporter_timeline(r_item["reporter_id"]), db, key_suffix=f"dept_tab_{idx}")
+                                render_single_reporter_profile(sel_rep, dept_timelines.get(r_item["reporter_id"], []), db, key_suffix=f"dept_tab_{idx}")
                     else:
-                        options_dict = {r["display_label"]: r["reporter_id"] for r in filtered_reporters}
+                        options_dict = {}
+                        for r in filtered_reporters:
+                            med = normalize_media_name(r.get('current_media', ''))
+                            dep = r.get('current_dept', '') or '부서 미표기'
+                            rnk = r.get('current_rank', '') or ''
+                            cnt = len(dept_timelines.get(r['reporter_id'], []))
+                            lbl = f"{r['name']} ({med} · {dep} {rnk} · 발령 {cnt}건)".strip()
+                            options_dict[lbl] = r["reporter_id"]
+
                         selected_label = st.selectbox(
                             f"인물 상세 프로필 조회 (총 {len(filtered_reporters)}명 중 선택)",
                             options=list(options_dict.keys()),
@@ -1606,10 +1687,10 @@ with tab_search:
                         )
                         sel_rep_id = options_dict[selected_label]
                         sel_rep = next((r for r in filtered_reporters if r["reporter_id"] == sel_rep_id), None) or db.get_reporter(sel_rep_id)
-                        render_single_reporter_profile(sel_rep, db.get_reporter_timeline(sel_rep_id), db, key_suffix="dept_sel")
+                        render_single_reporter_profile(sel_rep, dept_timelines.get(sel_rep_id, []), db, key_suffix="dept_sel")
                 elif len(filtered_reporters) == 1:
                     rep_only = filtered_reporters[0]
-                    render_single_reporter_profile(rep_only, db.get_reporter_timeline(rep_only["reporter_id"]), db, key_suffix="dept_single")
+                    render_single_reporter_profile(rep_only, dept_timelines.get(rep_only["reporter_id"], []), db, key_suffix="dept_single")
 
     elif search_mode == "매체·이름 검색" and (st.session_state.get("filter_mn_media_val") or st.session_state.get("filter_mn_name_val")):
         if not matched_records:
@@ -1633,6 +1714,48 @@ with tab_search:
                 </div>
             </div>
             """)
+
+            # 4대 핵심 부서 인력 통계 KPI 카드
+            unique_names = set(r.get("name") for r in unique_matched if r.get("name"))
+            dates = [str(r.get("pub_date", ""))[:10] for r in unique_matched if r.get("pub_date")]
+            d_min = min(dates)[:7] if dates else ""
+            d_max = max(dates)[:7] if dates else ""
+            promo_cnt = sum(1 for r in unique_matched if "승진" in r.get("action_type", ""))
+            trans_cnt = sum(1 for r in unique_matched if any(k in r.get("action_type", "") for k in ["전보", "이동", "보임", "발령"]))
+
+            kcol1, kcol2, kcol3, kcol4 = st.columns(4)
+            with kcol1:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">역대 소속 언론인</div>
+                    <div class="metric-value">{len(unique_names)}명</div>
+                    <div class="metric-sub">발령 기준 고유 인물 수</div>
+                </div>
+                """)
+            with kcol2:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">아카이브 총 발령 건수</div>
+                    <div class="metric-value">{len(unique_matched)}건</div>
+                    <div class="metric-sub">중복 병합 및 정규화 완료</div>
+                </div>
+                """)
+            with kcol3:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">데이터 추적 기간</div>
+                    <div class="metric-value" style="font-size:1.4rem;">{d_min} ~ {d_max}</div>
+                    <div class="metric-sub">공식 인사 아카이브</div>
+                </div>
+                """)
+            with kcol4:
+                render_html(f"""
+                <div class="metric-card">
+                    <div class="metric-label">승진 / 보직 이동</div>
+                    <div class="metric-value">{promo_cnt} / {trans_cnt}건</div>
+                    <div class="metric-sub">인사 변동 내역</div>
+                </div>
+                """)
 
             df_display = pd.DataFrame([{
                 "발령일자": r.get("pub_date", ""),

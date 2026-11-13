@@ -185,6 +185,10 @@ class MultiSourcePersonnelSync:
             FOREIGN KEY (person_id) REFERENCES person_profiles(person_id)
         );
         """)
+        try:
+            cur.execute("ALTER TABLE turnover_histories ADD COLUMN confidence_score REAL DEFAULT 1.0;")
+        except Exception:
+            pass
         cur.execute("CREATE INDEX IF NOT EXISTS idx_turnover_person ON turnover_histories(person_id);")
 
         # 5. 핵심 SQL View 갱신 (4개 매체 통합)
@@ -436,6 +440,75 @@ class MultiSourcePersonnelSync:
                     time.sleep(random.uniform(0.5, 1.0))
         except Exception as e:
             self.logger.warning(f"  {press} 다음 검색 수집 중 예외: {e}")
+
+        # 2. 공식 언론사 직통 인사 섹션 보조 수집 (포털 캡차 및 차단 방어)
+        try:
+            direct_items = []
+            if press == "연합뉴스":
+                for p in range(1, max_pages + 1):
+                    y_resp = requests.get(f"https://www.yna.co.kr/people/personnel/{p}", headers=HEADERS, timeout=8, verify=False)
+                    if y_resp.status_code == 200:
+                        y_soup = BeautifulSoup(y_resp.content, "html.parser")
+                        for a in y_soup.select("div.item-box01 a, ul.list a, a[href*='/view/AKR']"):
+                            h = a.get("href", "")
+                            t = a.get_text(strip=True)
+                            if h and "/view/AKR" in h:
+                                fu = h if h.startswith("http") else f"https:{h}" if h.startswith("//") else f"https://www.yna.co.kr{h}"
+                                direct_items.append((fu, t))
+            elif press == "뉴스1":
+                for p in range(1, max_pages + 1):
+                    n_url = f"https://www.news1.kr/life-culture/press/?page={p}" if p > 1 else "https://www.news1.kr/life-culture/press/"
+                    n_resp = requests.get(n_url, headers=HEADERS, timeout=8, verify=False)
+                    if n_resp.status_code == 200:
+                        n_soup = BeautifulSoup(n_resp.content, "html.parser")
+                        nd = n_soup.find("script", id="__NEXT_DATA__")
+                        if nd and nd.string:
+                            try:
+                                import json
+                                nd_d = json.loads(nd.string)
+                                for it in nd_d.get("props", {}).get("pageProps", {}).get("subsectionData", []):
+                                    fu = f"https://www.news1.kr/life-culture/press/{it.get('id')}"
+                                    direct_items.append((fu, it.get("title", "")))
+                            except Exception:
+                                pass
+
+            for fu, t in direct_items:
+                cur.execute("SELECT 1 FROM raw_articles WHERE article_id = ?", (fu,))
+                if cur.fetchone():
+                    continue
+                d_resp = requests.get(fu, headers=HEADERS, timeout=8, verify=False)
+                if d_resp.status_code != 200:
+                    continue
+                d_soup = BeautifulSoup(d_resp.content, "html.parser")
+                body = d_soup.select_one("article.story-news, #article_body, div.article_content, #articleWrap")
+                content = body.get_text("\n", strip=True) if body else ""
+                if len(content) < 20:
+                    continue
+
+                m_date = re.search(r"AKR(19[6-9]\d|20[0-3]\d)(\d{2})(\d{2})", fu)
+                if m_date:
+                    date_str = f"{m_date.group(1)}-{m_date.group(2)}-{m_date.group(3)}"
+                else:
+                    m_txt = re.search(r"(19[6-9]\d|20[0-3]\d)[.\-/년]\s*(\d{1,2})[.\-/월]\s*(\d{1,2})", d_resp.text[:1200])
+                    date_str = f"{m_txt.group(1)}-{int(m_txt.group(2)):02d}-{int(m_txt.group(3)):02d}" if m_txt else time.strftime("%Y-%m-%d")
+
+                t_media = press
+                t_match = re.search(r"[\[<]인사[\]>]\s*([가-힣A-Za-z0-9]+)", t)
+                if t_match:
+                    t_media = t_match.group(1).strip()
+
+                cur.execute("""
+                INSERT OR IGNORE INTO raw_articles (
+                    article_id, media_source, title, content, publish_date,
+                    target_media, is_media_company
+                ) VALUES (?, ?, ?, ?, ?, ?, 1)
+                """, (fu, press, t, content, date_str, t_media))
+                conn.commit()
+                saved_count += 1
+                self.logger.info(f"  + {press} 직통 신규 저장: [{date_str}] {t[:35]}")
+                time.sleep(random.uniform(0.3, 0.6))
+        except Exception as e:
+            self.logger.warning(f"  {press} 직통 수집 중 예외: {e}")
 
         conn.close()
         return saved_count
