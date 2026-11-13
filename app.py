@@ -58,7 +58,7 @@ if FAVICON_PATH.exists():
         fav_icon = "S"
 
 st.set_page_config(
-    page_title="Shiftly",
+    page_title="Shift",
     page_icon=fav_icon,
     layout="wide",
     initial_sidebar_state="expanded"
@@ -539,7 +539,7 @@ stats = db.get_stats()
 with st.sidebar:
     st.markdown("""
     <div style="padding: 10px 0 16px 0;">
-        <span style="font-size: 1.5rem; font-weight: 800; color: #1E293B;">Shiftly</span>
+        <span style="font-size: 1.5rem; font-weight: 800; color: #1E293B;">Shift</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -581,7 +581,7 @@ with st.sidebar:
 
 st.markdown("""
 <div style="margin-bottom: 20px;">
-    <h2 style="font-weight: 800; color: #0F172A; margin-bottom: 4px;">Shiftly</h2>
+    <h2 style="font-weight: 800; color: #0F172A; margin-bottom: 4px;">Shift</h2>
 </div>
 """, unsafe_allow_html=True)
 
