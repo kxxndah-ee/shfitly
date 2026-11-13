@@ -650,14 +650,21 @@ class PersonnelRegexParser:
 
             # 2. 발령 액션 및 섹션 직급 헤더 감지 (예: ◇부장대우 승진, ◇차장 승진, <승진>, <보임>, <임용>, ◇전보 등)
             clean_hdr = re.sub(r"^[◇◆■▲△▼▷▶<\[\(【\s]+", "", line).strip()
+            action_found = False
             for act_cand in cls.ACTION_CANDIDATES:
                 if act_cand in clean_hdr:
                     current_action = act_cand
+                    action_found = True
                     break
+            rank_found = False
             for r_cand in SORTED_RANKS:
                 if clean_hdr.startswith(r_cand) or f"{r_cand} 승진" in clean_hdr or f"{r_cand}승진" in clean_hdr or f"{r_cand} 전보" in clean_hdr or f"<{r_cand}>" in line or f"[{r_cand}]" in line or f"({r_cand})" in line:
                     current_section_rank = r_cand
+                    rank_found = True
                     break
+            # 새로운 액션 헤더(예: ◇전보, ◇파견)가 나타났는데 직급 명시가 없으면 이전 섹션 직급 초기화
+            if action_found and not rank_found:
+                current_section_rank = ""
 
             # 4. 불릿 기호 기준으로 개별 발령 항목 쪼개기
             # 예: △건설부동산부장 김희준 △정치부 차장 박철수
@@ -685,16 +692,22 @@ class PersonnelRegexParser:
                 # 4-2. 항목 단위 발령 액션 및 섹션 직급 헤더 감지 (예: <부장대우 승진>, <승진>, <보임>, <임용>, <전보> 등)
                 clean_item_hdr = re.sub(r"^[<\[\(【\s]+|[>\]\)】\s]+$", "", item).strip()
                 item_has_header = False
+                item_act_found = False
                 for act_cand in cls.ACTION_CANDIDATES:
                     if act_cand in clean_item_hdr:
                         current_action = act_cand
                         item_has_header = True
+                        item_act_found = True
                         break
+                item_rank_found = False
                 for r_cand in SORTED_RANKS:
                     if clean_item_hdr.startswith(r_cand) or f"{r_cand} 승진" in clean_item_hdr or f"{r_cand} 전보" in clean_item_hdr:
                         current_section_rank = r_cand
                         item_has_header = True
+                        item_rank_found = True
                         break
+                if item_act_found and not item_rank_found:
+                    current_section_rank = ""
                 if item_has_header and not any(cls.clean_name(t) for t in item.split()):
                     continue
 
@@ -777,7 +790,7 @@ class PersonnelRegexParser:
                 continue
 
             extracted_names: List[str] = []
-            extracted_rank = section_rank or last_rank or "기자"
+            extracted_rank = section_rank or "기자"
             extracted_dept = last_dept or "본사"
 
             # 1. 토큰 중 유효한 한글 인명(2~4자) 찾기
@@ -810,13 +823,13 @@ class PersonnelRegexParser:
             # 2. 이름 위치에 따라 부서와 직급 추정
             if extracted_names:
                 if not other_tokens:
-                    # 이름만 있는 경우
-                    extracted_rank = section_rank or last_rank or "기자"
+                    # 이름만 있는 경우 (부장, 차장 등 직급 언급이 없으면 모두 기자)
+                    extracted_rank = section_rank or "기자"
                 elif len(other_tokens) == 1:
                     first = other_tokens[0]
                     # 〃(반복 부호) 처리: 이전 직급 상속 및 부서명 정제
-                    if "〃" in first:
-                        dept_clean = first.replace("〃", "").strip()
+                    if "〃" in first or "″" in first or "''" in first:
+                        dept_clean = first.replace("〃", "").replace("″", "").replace("''", "").strip()
                         if dept_clean and not dept_clean.endswith("부") and not dept_clean.endswith("팀"):
                             dept_clean = dept_clean + ("팀" if "팀" in last_rank else "부")
                         extracted_dept = dept_clean or last_dept or "본사"
@@ -837,7 +850,7 @@ class PersonnelRegexParser:
                             extracted_dept = last_dept or "본사"
                         else:
                             extracted_dept = first
-                            extracted_rank = section_rank or last_rank or "기자"
+                            extracted_rank = section_rank or "기자"
                     last_dept = extracted_dept
                     if extracted_rank and extracted_rank not in ["기자", "평기자"]:
                         last_rank = extracted_rank
@@ -863,9 +876,9 @@ class PersonnelRegexParser:
                             dept_tokens = other_tokens[:found_rank_idx]
                             extracted_dept = " ".join(dept_tokens) if dept_tokens else (last_dept or "본사")
                     else:
-                        # 직급 토큰이 없는 경우 (예: "편집국" "오피니언부") -> 모두 부서로 간주, 직급은 section_rank 또는 직전 직급
+                        # 직급 토큰이 없는 경우 (예: "건설부동산부" or "편집국" "오피니언부") -> 직급 언급이 없으므로 모두 '기자'
                         extracted_dept = " ".join(other_tokens)
-                        extracted_rank = section_rank or last_rank or "기자"
+                        extracted_rank = section_rank or "기자"
                     last_dept = extracted_dept
                     if extracted_rank and extracted_rank not in ["기자", "평기자"]:
                         last_rank = extracted_rank
@@ -2771,10 +2784,20 @@ class OnlineNewsTracker:
             sub_tokens = [td[:2], td[2:]] if len(td) == 5 else ([t for t in re.split(r"[/·,\s]+", td) if t])
             return any(st in rd for st in sub_tokens if len(st) >= 2)
 
-        def matches_rank(target_r: str, record_r: str, record_d: str = "") -> bool:
+        def matches_rank(target_r: str, record_r: str, record_d: str = "", raw_t: str = "") -> bool:
             if not target_r:
                 return True
             tr = target_r.strip()
+            if tr == "기자":
+                # '기자' 검색 시 직급 미언급 인물(부장/차장 등 관리직 언급이 없는 경우) 포함
+                if not record_r or record_r in ["기자", "평기자", "미표기", "수습기자"]:
+                    return True
+                managerial = ["부장", "차장", "국장", "부국장", "팀장", "실장", "본부장", "대표", "사장", "주필", "논설", "위원", "에디터", "데스크"]
+                if not any(m in record_r for m in managerial):
+                    return True
+                if raw_t and not any(m in raw_t for m in managerial):
+                    return True
+                return False
             return tr in record_r or tr in record_d or record_r in tr
 
         # 2. 사용자가 요청한 조건(media, dept, rank)에 부합하는 레코드 필터링
@@ -2782,7 +2805,7 @@ class OnlineNewsTracker:
             r for r in all_parsed_records
             if (not media_clean or is_same_media_company(media_clean, r.get("media", "")))
             and matches_dept(dept_clean, r.get("dept", ""))
-            and matches_rank(rank_clean, r.get("rank_title", ""), r.get("dept", ""))
+            and matches_rank(rank_clean, r.get("rank_title", ""), r.get("dept", ""), r.get("raw_text", ""))
         ]
 
         # 동일 부서 타 직급 매칭 (예: 더벨 건설부동산부 차장 전기룡)
@@ -3648,7 +3671,65 @@ class MediaDatabase:
                 params.append(f"%{name}%")
 
             clean_d = dept.strip() if dept else ""
+            clean_r = rank.strip() if rank else ""
             is_const_re = ("건설" in clean_d and "부동산" in clean_d)
+            is_rep_search = (clean_r == "기자")
+
+            rep_rank_pr_sql = """(
+                pr.rank_title LIKE '%기자%' 
+                OR pr.rank_title IS NULL 
+                OR pr.rank_title = '' 
+                OR pr.rank_title = '미표기' 
+                OR pr.rank_level <= 2 
+                OR (
+                    pr.rank_title NOT LIKE '%부장%' 
+                    AND pr.rank_title NOT LIKE '%차장%' 
+                    AND pr.rank_title NOT LIKE '%국장%' 
+                    AND pr.rank_title NOT LIKE '%팀장%' 
+                    AND pr.rank_title NOT LIKE '%실장%' 
+                    AND pr.rank_title NOT LIKE '%본부장%' 
+                    AND pr.rank_title NOT LIKE '%대표%' 
+                    AND pr.rank_title NOT LIKE '%사장%' 
+                    AND pr.rank_title NOT LIKE '%주필%' 
+                    AND pr.rank_title NOT LIKE '%논설%'
+                    AND pr.rank_title NOT LIKE '%위원%'
+                )
+                OR (
+                    pr.raw_text NOT LIKE '%부장%' 
+                    AND pr.raw_text NOT LIKE '%차장%' 
+                    AND pr.raw_text NOT LIKE '%국장%' 
+                    AND pr.raw_text NOT LIKE '%팀장%' 
+                    AND pr.raw_text NOT LIKE '%실장%' 
+                    AND pr.raw_text NOT LIKE '%본부장%' 
+                    AND pr.raw_text NOT LIKE '%대표%' 
+                    AND pr.raw_text NOT LIKE '%사장%' 
+                    AND pr.raw_text NOT LIKE '%주필%' 
+                    AND pr.raw_text NOT LIKE '%논설%'
+                    AND pr.raw_text NOT LIKE '%위원%'
+                    AND pr.raw_text NOT LIKE '%대우%'
+                    AND pr.raw_text NOT LIKE '%〃%'
+                )
+            )"""
+
+            rep_rank_cur_sql = """(
+                r.current_rank LIKE '%기자%' 
+                OR r.current_rank IS NULL 
+                OR r.current_rank = '' 
+                OR r.current_rank = '미표기' 
+                OR (
+                    r.current_rank NOT LIKE '%부장%' 
+                    AND r.current_rank NOT LIKE '%차장%' 
+                    AND r.current_rank NOT LIKE '%국장%' 
+                    AND r.current_rank NOT LIKE '%팀장%' 
+                    AND r.current_rank NOT LIKE '%실장%' 
+                    AND r.current_rank NOT LIKE '%본부장%' 
+                    AND r.current_rank NOT LIKE '%대표%' 
+                    AND r.current_rank NOT LIKE '%사장%' 
+                    AND r.current_rank NOT LIKE '%주필%' 
+                    AND r.current_rank NOT LIKE '%논설%' 
+                    AND r.current_rank NOT LIKE '%위원%'
+                )
+            )"""
 
             if dept and rank:
                 d_pr_sql = "(pr.dept LIKE ? OR pr.dept LIKE ? OR pr.dept LIKE ?)" if is_const_re else "pr.dept LIKE ?"
@@ -3656,29 +3737,52 @@ class MediaDatabase:
                 d_cur_sql = "(r.current_dept LIKE ? OR r.current_dept LIKE ? OR r.current_dept LIKE ?)" if is_const_re else "r.current_dept LIKE ?"
                 d_cur_p = ["%건설부동산%", "%건설부%", "%부동산부%"] if is_const_re else [f"%{dept}%"]
 
-                query += f""" AND (
-                    EXISTS (
-                        SELECT 1 FROM personnel_records pr 
-                        WHERE pr.reporter_id = r.reporter_id
-                    """
-                if media:
-                    query += " AND (pr.media LIKE ? OR pr.media LIKE ?)"
-                    params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
-                query += f""" AND {d_pr_sql} 
-                         AND (pr.rank_title LIKE ? OR pr.dept LIKE ?)
-                    )
-                    OR (
-                    """
-                params.extend(d_pr_p)
-                params.extend([f"%{rank}%", f"%{rank}%"])
-                if media:
-                    query += " (r.current_media LIKE ? OR r.current_media LIKE ?) AND "
-                    params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
-                query += f""" {d_cur_sql} AND r.current_rank LIKE ?
-                    )
-                )"""
-                params.extend(d_cur_p)
-                params.append(f"%{rank}%")
+                if is_rep_search:
+                    query += f""" AND (
+                        EXISTS (
+                            SELECT 1 FROM personnel_records pr 
+                            WHERE pr.reporter_id = r.reporter_id
+                        """
+                    if media:
+                        query += " AND (pr.media LIKE ? OR pr.media LIKE ?)"
+                        params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                    query += f""" AND {d_pr_sql} 
+                             AND {rep_rank_pr_sql}
+                        )
+                        OR (
+                        """
+                    params.extend(d_pr_p)
+                    if media:
+                        query += " (r.current_media LIKE ? OR r.current_media LIKE ?) AND "
+                        params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                    query += f""" {d_cur_sql} AND {rep_rank_cur_sql}
+                        )
+                    )"""
+                    params.extend(d_cur_p)
+                else:
+                    query += f""" AND (
+                        EXISTS (
+                            SELECT 1 FROM personnel_records pr 
+                            WHERE pr.reporter_id = r.reporter_id
+                        """
+                    if media:
+                        query += " AND (pr.media LIKE ? OR pr.media LIKE ?)"
+                        params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                    query += f""" AND {d_pr_sql} 
+                             AND (pr.rank_title LIKE ? OR pr.dept LIKE ?)
+                        )
+                        OR (
+                        """
+                    params.extend(d_pr_p)
+                    params.extend([f"%{rank}%", f"%{rank}%"])
+                    if media:
+                        query += " (r.current_media LIKE ? OR r.current_media LIKE ?) AND "
+                        params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                    query += f""" {d_cur_sql} AND r.current_rank LIKE ?
+                        )
+                    )"""
+                    params.extend(d_cur_p)
+                    params.append(f"%{rank}%")
             elif dept:
                 d_pr_sql = "(pr.dept LIKE ? OR pr.dept LIKE ? OR pr.dept LIKE ?)" if is_const_re else "pr.dept LIKE ?"
                 d_pr_p = ["%건설부동산%", "%건설부%", "%부동산부%"] if is_const_re else [f"%{dept}%"]
@@ -3706,26 +3810,46 @@ class MediaDatabase:
                 )"""
                 params.extend(d_cur_p)
             elif rank:
-                query += """ AND (
-                    EXISTS (
-                        SELECT 1 FROM personnel_records pr 
-                        WHERE pr.reporter_id = r.reporter_id
-                    """
-                if media:
-                    query += " AND (pr.media LIKE ? OR pr.media LIKE ?)"
-                    params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
-                query += """ AND (pr.rank_title LIKE ? OR pr.dept LIKE ?)
-                    )
-                    OR (
-                    """
-                params.extend([f"%{rank}%", f"%{rank}%"])
-                if media:
-                    query += " (r.current_media LIKE ? OR r.current_media LIKE ?) AND "
-                    params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
-                query += """ r.current_rank LIKE ?
-                    )
-                )"""
-                params.append(f"%{rank}%")
+                if is_rep_search:
+                    query += f""" AND (
+                        EXISTS (
+                            SELECT 1 FROM personnel_records pr 
+                            WHERE pr.reporter_id = r.reporter_id
+                        """
+                    if media:
+                        query += " AND (pr.media LIKE ? OR pr.media LIKE ?)"
+                        params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                    query += f""" AND {rep_rank_pr_sql}
+                        )
+                        OR (
+                        """
+                    if media:
+                        query += " (r.current_media LIKE ? OR r.current_media LIKE ?) AND "
+                        params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                    query += f""" {rep_rank_cur_sql}
+                        )
+                    )"""
+                else:
+                    query += """ AND (
+                        EXISTS (
+                            SELECT 1 FROM personnel_records pr 
+                            WHERE pr.reporter_id = r.reporter_id
+                        """
+                    if media:
+                        query += " AND (pr.media LIKE ? OR pr.media LIKE ?)"
+                        params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                    query += """ AND (pr.rank_title LIKE ? OR pr.dept LIKE ?)
+                        )
+                        OR (
+                        """
+                    params.extend([f"%{rank}%", f"%{rank}%"])
+                    if media:
+                        query += " (r.current_media LIKE ? OR r.current_media LIKE ?) AND "
+                        params.extend([f"%{media}%", f"%{normalize_media_name(media)}%"])
+                    query += """ r.current_rank LIKE ?
+                        )
+                    )"""
+                    params.append(f"%{rank}%")
             elif media:
                 m_norm = normalize_media_name(media)
                 query += """ AND (
@@ -3773,8 +3897,47 @@ class MediaDatabase:
                     query += " AND dept LIKE ?"
                     params.append(f"%{dept}%")
             if rank:
-                query += " AND (rank_title LIKE ? OR dept LIKE ?)"
-                params.extend([f"%{rank}%", f"%{rank}%"])
+                clean_r = rank.strip()
+                if clean_r == "기자":
+                    # 기사에 부장, 차장 등 관리직 언급이 없으면 모두 '기자'로 간주하여 직급 미언급 인물 전원 분석 대상 포함
+                    query += """ AND (
+                        rank_title LIKE '%기자%' 
+                        OR rank_title IS NULL 
+                        OR rank_title = '' 
+                        OR rank_title = '미표기' 
+                        OR rank_level <= 2 
+                        OR (
+                            rank_title NOT LIKE '%부장%' 
+                            AND rank_title NOT LIKE '%차장%' 
+                            AND rank_title NOT LIKE '%국장%' 
+                            AND rank_title NOT LIKE '%팀장%' 
+                            AND rank_title NOT LIKE '%실장%' 
+                            AND rank_title NOT LIKE '%본부장%' 
+                            AND rank_title NOT LIKE '%대표%' 
+                            AND rank_title NOT LIKE '%사장%' 
+                            AND rank_title NOT LIKE '%주필%' 
+                            AND rank_title NOT LIKE '%논설%'
+                            AND rank_title NOT LIKE '%위원%'
+                        )
+                        OR (
+                            raw_text NOT LIKE '%부장%' 
+                            AND raw_text NOT LIKE '%차장%' 
+                            AND raw_text NOT LIKE '%국장%' 
+                            AND raw_text NOT LIKE '%팀장%' 
+                            AND raw_text NOT LIKE '%실장%' 
+                            AND raw_text NOT LIKE '%본부장%' 
+                            AND raw_text NOT LIKE '%대표%' 
+                            AND raw_text NOT LIKE '%사장%' 
+                            AND raw_text NOT LIKE '%주필%' 
+                            AND raw_text NOT LIKE '%논설%'
+                            AND raw_text NOT LIKE '%위원%'
+                            AND raw_text NOT LIKE '%대우%'
+                            AND raw_text NOT LIKE '%〃%'
+                        )
+                    )"""
+                else:
+                    query += " AND (rank_title LIKE ? OR dept LIKE ?)"
+                    params.extend([f"%{rank}%", f"%{rank}%"])
             query += " ORDER BY pub_date DESC, id DESC LIMIT ?"
             params.append(limit)
             cursor.execute(query, params)

@@ -1541,8 +1541,12 @@ with tab_search:
                 title_parts = []
                 if m_val: title_parts.append(m_val)
                 if d_val: title_parts.append(d_val)
-                if r_val: title_parts.append(f"역대 {r_val}")
-                elif not r_val and (m_val or d_val): title_parts.append("역대")
+                if r_val.strip() == "기자":
+                    title_parts.append("역대 기자 (직급 미언급 포함)")
+                elif r_val:
+                    title_parts.append(f"역대 {r_val}")
+                elif not r_val and (m_val or d_val):
+                    title_parts.append("역대")
                 title_parts.append("발령 명단")
                 section_title = " ".join(title_parts)
             badge_title = f"아카이브 전체 기간 · 총 {len(unique_matched)}건"
@@ -1600,12 +1604,25 @@ with tab_search:
                 </div>
                 """)
 
+            def _resolve_display_rank(rec, search_rank):
+                r_tit = rec.get("rank_title", "")
+                raw_t = rec.get("raw_text", "")
+                # 기사에 부장, 차장 등 관리직 언급이 없으면 모두 기자로 표기
+                managerial = ["부장", "차장", "국장", "부국장", "팀장", "실장", "본부장", "대표", "사장", "주필", "논설", "위원", "에디터", "데스크"]
+                if not r_tit or r_tit in ["기자", "평기자", "미표기", "수습기자"]:
+                    return "기자"
+                if search_rank.strip() == "기자" and not any(m in raw_t for m in managerial):
+                    return "기자"
+                if not any(m in r_tit for m in managerial) and not any(m in raw_t for m in managerial):
+                    return "기자"
+                return r_tit
+
             df_display = pd.DataFrame([{
                 "발령일자": r.get("pub_date", ""),
                 "언론사": normalize_media_name(r.get("media", "")),
                 "발령구분": r.get("action_type", "발령"),
                 "부서": r.get("dept", ""),
-                "직급": r.get("rank_title", ""),
+                "직급": _resolve_display_rank(r, r_val),
                 "성명": r.get("name", ""),
                 "기사원문(링크주소)": r.get("article_url", "")
             } for r in unique_matched[:500]])
@@ -1676,6 +1693,8 @@ with tab_search:
                             med = normalize_media_name(r.get('current_media', ''))
                             dep = r.get('current_dept', '') or '부서 미표기'
                             rnk = r.get('current_rank', '') or ''
+                            if r_val.strip() == "기자" and not any(m in rnk for m in ["부장", "차장", "국장", "부국장", "팀장", "실장", "본부장", "대표", "사장", "주필", "논설", "위원", "에디터", "데스크"]):
+                                rnk = "기자"
                             cnt = len(dept_timelines.get(r['reporter_id'], []))
                             lbl = f"{r['name']} ({med} · {dep} {rnk} · 발령 {cnt}건)".strip()
                             options_dict[lbl] = r["reporter_id"]

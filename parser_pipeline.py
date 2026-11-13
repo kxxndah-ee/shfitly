@@ -156,7 +156,8 @@ def parse_article_content(content: str, default_company: str, event_date: str) -
                 current_dept = dept
             current_pos = pos
         else:
-            pos = current_pos if current_pos else "기자"
+            # 부장, 차장 등 직급 언급이 없으면 모두 기자로 분류
+            pos = "기자"
             dept = role_desc if role_desc else current_dept
 
         rank_score = normalize_rank_score(pos)
