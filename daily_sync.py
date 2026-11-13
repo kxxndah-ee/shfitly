@@ -600,6 +600,11 @@ class MultiSourcePersonnelSync:
                 engine = PersonnelTrackerEngine(self.tracker_db_path)
                 engine.process_records(all_tracker_records, append=True)
                 self.logger.info(f"[Step 2 동기화] {self.tracker_db_path} 에 {len(all_tracker_records)}건 발령 데이터 즉시 연동 완료.")
+                try:
+                    db_inst = MediaDatabase(self.tracker_db_path)
+                    db_inst.dump_seed_data()
+                except Exception:
+                    pass
             except Exception as e:
                 self.logger.error(f"[Step 2 동기화 오류] {self.tracker_db_path} 연동 실패: {e}")
 

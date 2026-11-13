@@ -562,6 +562,13 @@ with st.sidebar:
             st.session_state["upload_banner"] = res["message"]
             st.rerun()
 
+    if st.button("아카이브 데이터 동기화", use_container_width=True, help="번들링된 1965~2026 전체 7,176건 아카이브 데이터를 로컬 DB에 병합 및 복원합니다."):
+        with st.spinner("아카이브 시드 데이터(7,176건) 동기화 중..."):
+            res_sync = db.ensure_seed_data(force=True)
+            cnt = res_sync.get("inserted_records", 0)
+            st.session_state["upload_banner"] = f"아카이브 데이터 동기화 완료: {cnt:,}건 추가 반영 (전체 {db.get_stats()['records']:,}건)"
+            st.rerun()
+
     if st.button("전체 데이터 삭제", use_container_width=True, type="secondary"):
         db.clear_all_data()
         st.session_state["upload_banner"] = "데이터베이스의 모든 발령 및 기자 데이터가 삭제되었습니다."

@@ -17,6 +17,8 @@ import re
 import html
 import sqlite3
 import datetime
+import json
+import gzip
 from typing import List, Dict, Tuple, Optional, Any, Set
 from urllib.parse import quote
 import pandas as pd
@@ -1918,13 +1920,28 @@ class OnlineNewsTracker:
         seen_urls = set()
 
         def is_valid_wire_article(tit: str, u: str, pr: str) -> bool:
-            if not is_personnel_article_title(tit):
+            clean_title = tit.replace("새 창 열림", "").replace("새창열림", "").strip()
+            if not is_personnel_article_title(clean_title, url=u):
                 return False
 
-            # 만약 검색 대상 키워드가 특정 언론사명인 경우, 기사 제목에 해당 언론사 또는 언론사 태그가 포함되어야 함 (타 부처/기관 기사 배제)
-            if target_keyword and any(is_same_media_company(target_keyword, km) for km in KNOWN_MEDIA_NAMES):
-                if target_keyword not in tit and not any(km in tit for km in KNOWN_MEDIA_NAMES):
-                    return False
+            # 만약 검색 대상 키워드가 특정 언론사명인 경우, 기사 제목 또는 링크에 해당 언론사 확인
+            if target_keyword:
+                matched_km = None
+                for km in KNOWN_MEDIA_NAMES:
+                    if km in target_keyword or is_same_media_company(target_keyword, km):
+                        matched_km = km
+                        break
+                if matched_km:
+                    km_tokens = [matched_km]
+                    if matched_km in MEDIA_GROUP_ALIASES:
+                        km_tokens.extend(MEDIA_GROUP_ALIASES[matched_km])
+                    if not any(tok in clean_title for tok in km_tokens):
+                        if pr and is_same_media_company(pr, matched_km):
+                            pass
+                        elif any(tok in u for tok in [matched_km, "article/421", "article/001", "article/025", "article/003"]):
+                            pass
+                        else:
+                            return False
 
             # 통신 3사(뉴스1·연합뉴스·뉴시스), 중앙일보, 한국기자협회 기사 허용
             if pr in ["뉴스1", "연합뉴스", "뉴시스", "중앙일보", "한국기자협회", "기자협회"]:
@@ -1936,10 +1953,10 @@ class OnlineNewsTracker:
             if not pr and ("v.daum.net/v/" in u or "n.news.naver.com" in u):
                 return True
             # 포털에 송고된 언론사 공식 [인사] 기사 (제목에 [인사]/<인사> 및 언론사명이 포함된 경우)
-            if any(k in tit for k in ["[인사]", "<인사>", "【인사】"]):
-                if target_keyword and target_keyword in tit:
+            if any(k in clean_title for k in ["[인사]", "<인사>", "【인사】"]):
+                if target_keyword and target_keyword in clean_title:
                     return True
-                if any(m in tit for m in KNOWN_MEDIA_NAMES):
+                if any(m in clean_title for m in KNOWN_MEDIA_NAMES):
                     return True
             return False
 
@@ -2021,7 +2038,7 @@ class OnlineNewsTracker:
                     except Exception as e:
                         print(f"[Naver API Search Error] {e}")
 
-            # 1-2. 네이버 모바일 웹 검색 (뉴스1 / 연합뉴스 / 중앙일보 / 기자협회 인링크 다중 페이지 탐색)
+            # 1-2. 네이버 PC/모바일 웹 검색 (뉴스1 / 연합뉴스 / 중앙일보 / 기자협회 인링크 다중 페이지 탐색)
             for start_idx in [1, 16]:
                 if len(articles) >= max_items:
                     break
@@ -2029,6 +2046,63 @@ class OnlineNewsTracker:
                     n_sort = "1" if sort_first == "date" else "0"
                     nso_sort = "so:dd" if n_sort == "1" else "so:r"
                     start_param = f"&start={start_idx}" if start_idx > 1 else ""
+
+                    # 1) PC 검색 (SDS 레이아웃 카드 지원)
+                    pc_url = f"https://search.naver.com/search.naver?where=news&query={quote(wq)}&sort={n_sort}&ds={start_year}.01.01&de={end_year}.12.31&nso={nso_sort},p:from{start_year}0101to{end_year}1231,a:all{start_param}"
+                    resp_pc = cls.get_session().get(pc_url, headers=cls.HEADERS, timeout=3.5, verify=False)
+                    if resp_pc.status_code == 200:
+                        soup_pc = BeautifulSoup(resp_pc.content, "html.parser")
+                        cards = soup_pc.find_all("div", class_=lambda c: c and any(k in c for k in ["sds-comps", "news_wrap", "bx", "rFpROc3sT6Izewfc"]))
+                        for card in cards:
+                            press_name = ""
+                            for a in card.find_all("a"):
+                                h = a.get("href", "")
+                                t = a.get_text(strip=True).replace("새 창 열림", "").strip()
+                                if ("/press/" in h or "media.naver.com" in h) and t:
+                                    press_name = t
+                                    break
+
+                            target_title = ""
+                            naver_url = ""
+                            origin_url = ""
+
+                            for a in card.find_all("a"):
+                                h = a.get("href", "")
+                                t = a.get_text(strip=True).replace("새 창 열림", "").strip()
+                                if not h or not t or "keep.naver.com" in h or h.startswith("#") or "javascript:" in h or "/press/" in h:
+                                    continue
+                                if "news.naver.com" in h:
+                                    naver_url = h
+                                    continue
+                                if is_personnel_article_title(t, url=h):
+                                    target_title = t
+                                    origin_url = h
+
+                            if target_title:
+                                final_url = naver_url or origin_url
+                                if final_url and final_url not in seen_urls:
+                                    p_guess = press_name
+                                    if not p_guess:
+                                        if "article/421/" in final_url or "news1.kr" in final_url:
+                                            p_guess = "뉴스1"
+                                        elif "article/001/" in final_url or "yna.co.kr" in final_url:
+                                            p_guess = "연합뉴스"
+                                        elif "article/025/" in final_url or "joongang.co.kr" in final_url:
+                                            p_guess = "중앙일보"
+                                        elif "journalist.or.kr" in final_url:
+                                            p_guess = "한국기자협회"
+                                    if is_valid_wire_article(target_title, final_url, p_guess):
+                                        seen_urls.add(final_url)
+                                        articles.append({
+                                            "title": target_title,
+                                            "url": final_url,
+                                            "media": p_guess,
+                                            "date_text": ""
+                                        })
+                                        if len(articles) >= max_items:
+                                            break
+
+                    # 2) 모바일 검색 보조
                     naver_url = f"https://m.search.naver.com/search.naver?where=m_news&query={quote(wq)}&sort={n_sort}&ds={start_year}.01.01&de={end_year}.12.31&nso={nso_sort},p:from{start_year}0101to{end_year}1231,a:all{start_param}"
                     resp = cls.get_session().get(naver_url, headers=cls.HEADERS_MOBILE, timeout=3.5, verify=False)
                     if resp.status_code == 200:
@@ -2546,27 +2620,29 @@ class OnlineNewsTracker:
                     f'"[인사] {media_clean}"',
                     f'"[인사]{media_clean}"',
                     f'"{media_clean}" [인사]',
-                    f'{media_clean} {dept_clean} [인사]',
-                    f'{media_clean} "{dept_clean}" [인사]',
-                    f'{media_clean} "{dept_clean}부장" [인사]',
-                    f'{media_clean} "{rank_clean}" [인사]',
-                    f'[인사] <{media_clean}>',
-                    f'{media_clean} [인사] 뉴스1',
-                    f'{media_clean} [인사] 연합뉴스',
-                    f'{media_clean} [인사] 중앙일보',
-                    f'{media_clean} [인사] 기자협회',
-                ])
-            elif media_clean and rank_clean:
-                q_list.extend([
-                    f'{media_clean} "{rank_clean}" [인사]',
-                    f'{media_clean} [인사] "{rank_clean}"',
-                    f'{media_clean} [인사]',
                     f'[인사] {media_clean}',
                     f'[인사] <{media_clean}>',
-                    f'{media_clean} [인사] 뉴스1',
-                    f'{media_clean} [인사] 연합뉴스',
-                    f'{media_clean} [인사] 중앙일보',
+                    f'{media_clean} {dept_clean} [인사]',
+                    f'{media_clean} "{dept_clean}" [인사]',
+                    f'{media_clean} "{dept_clean}부" [인사]',
+                    f'{media_clean} "{rank_clean}" [인사]',
                 ])
+                for w_src in ["뉴스1", "연합뉴스", "중앙일보", "기자협회"]:
+                    if not is_same_media_company(media_clean, w_src):
+                        q_list.append(f'{media_clean} [인사] {w_src}')
+            elif media_clean and rank_clean:
+                q_list.extend([
+                    f'"[인사] {media_clean}"',
+                    f'"[인사]{media_clean}"',
+                    f'"{media_clean}" [인사]',
+                    f'[인사] {media_clean}',
+                    f'{media_clean} "{rank_clean}" [인사]',
+                    f'{media_clean} [인사] "{rank_clean}"',
+                    f'[인사] <{media_clean}>',
+                ])
+                for w_src in ["뉴스1", "연합뉴스", "중앙일보"]:
+                    if not is_same_media_company(media_clean, w_src):
+                        q_list.append(f'{media_clean} [인사] {w_src}')
                 if media_clean in MEDIA_GROUP_ALIASES:
                     for g_alias in MEDIA_GROUP_ALIASES[media_clean]:
                         q_list.extend([
@@ -2576,19 +2652,17 @@ class OnlineNewsTracker:
                         ])
             elif media_clean and dept_clean:
                 q_list.extend([
-                    f'"{media_clean}" [인사]',
                     f'"[인사] {media_clean}"',
                     f'"[인사]{media_clean}"',
-                    f'{media_clean} "{dept_clean}" [인사]',
-                    f'{media_clean} {dept_clean} [인사]',
-                    f'{media_clean} [인사]',
+                    f'"{media_clean}" [인사]',
                     f'[인사] {media_clean}',
                     f'[인사] <{media_clean}>',
-                    f'{media_clean} [인사] 뉴스1',
-                    f'{media_clean} [인사] 연합뉴스',
-                    f'{media_clean} [인사] 중앙일보',
-                    f'{media_clean} [인사] 기자협회',
+                    f'{media_clean} "{dept_clean}" [인사]',
+                    f'{media_clean} {dept_clean} [인사]',
                 ])
+                for w_src in ["뉴스1", "연합뉴스", "중앙일보", "기자협회"]:
+                    if not is_same_media_company(media_clean, w_src):
+                        q_list.append(f'{media_clean} [인사] {w_src}')
                 if media_clean in MEDIA_GROUP_ALIASES:
                     for g_alias in MEDIA_GROUP_ALIASES[media_clean]:
                         q_list.extend([
@@ -3277,9 +3351,14 @@ class MediaDatabase:
     저장하고 조회하는 SQLite 데이터베이스 관리자.
     """
 
-    def __init__(self, db_path: str = "media_tracker.db"):
+    def __init__(self, db_path: str = "media_tracker.db", auto_seed: bool = True):
         self.db_path = db_path
         self._init_db()
+        if auto_seed:
+            try:
+                self.ensure_seed_data()
+            except Exception:
+                pass
 
     def get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -3396,6 +3475,148 @@ class MediaDatabase:
                 cursor.execute("DELETE FROM job_changes WHERE from_dept LIKE ? OR to_dept LIKE ?", (f"%{kw}%", f"%{kw}%"))
             conn.commit()
         return deleted_count
+
+    def dump_seed_data(self, seed_path: str = "data/archive_seed.json.gz") -> int:
+        """현재 DB의 personnel_records, reporters, job_changes를 압축 시드 파일로 내보냅니다."""
+        try:
+            target_path = seed_path
+            if not os.path.isabs(target_path):
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                target_path = os.path.join(base_dir, seed_path)
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                payload = {}
+                for tbl in ["personnel_records", "reporters", "job_changes"]:
+                    cursor.execute(f"SELECT * FROM {tbl}")
+                    payload[tbl] = [dict(row) for row in cursor.fetchall()]
+            with gzip.open(target_path, "wt", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            return len(payload.get("personnel_records", []))
+        except Exception as e:
+            print(f"[dump_seed_data error] {e}")
+            return 0
+
+    def ensure_seed_data(self, seed_path: str = "data/archive_seed.json.gz", force: bool = False) -> Dict[str, Any]:
+        """
+        저장소에 번들링된 archive_seed.json.gz 데이터를 확인하여,
+        로컬 DB에 레코드가 부족하거나(5,000건 미만) 최신 2026년 데이터가 누락되어 있을 경우
+        자동으로 시드 데이터를 병합(Merge)하여 전체 기간(1965~2026) 데이터를 완성합니다.
+        """
+        candidate_paths = [
+            seed_path,
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), seed_path),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", seed_path),
+            os.path.abspath(seed_path)
+        ]
+        resolved_path = None
+        for cp in candidate_paths:
+            if os.path.exists(cp):
+                resolved_path = cp
+                break
+
+        if not resolved_path:
+            return {"inserted_records": 0, "status": "no_seed_file"}
+
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*), MAX(pub_date) FROM personnel_records")
+                row = cursor.fetchone()
+                cnt = row[0] if row else 0
+                max_date = str(row[1]) if (row and row[1]) else ""
+
+                if not force and cnt >= 7000 and max_date >= "2026-01-01":
+                    return {"inserted_records": 0, "status": "already_up_to_date", "total_records": cnt}
+
+                with gzip.open(resolved_path, "rt", encoding="utf-8") as f:
+                    seed_payload = json.load(f)
+
+                if isinstance(seed_payload, dict):
+                    seed_records = seed_payload.get("personnel_records", [])
+                    seed_reporters = seed_payload.get("reporters", [])
+                    seed_changes = seed_payload.get("job_changes", [])
+                elif isinstance(seed_payload, list):
+                    seed_records = seed_payload
+                    seed_reporters = []
+                    seed_changes = []
+                else:
+                    return {"inserted_records": 0, "status": "invalid_seed_format"}
+
+                cursor.execute("SELECT pub_date, media, name, dept, rank_title FROM personnel_records")
+                existing_keys = set(cursor.fetchall())
+
+                to_insert = []
+                for r in seed_records:
+                    k = (r.get("pub_date"), r.get("media"), r.get("name"), r.get("dept"), r.get("rank_title"))
+                    if k not in existing_keys:
+                        existing_keys.add(k)
+                        to_insert.append((
+                            r.get("pub_date"), r.get("media"), r.get("dept"), r.get("domain", ""),
+                            r.get("rank_title"), r.get("rank_level", 2), r.get("name"), r.get("action_type", ""),
+                            r.get("email", ""), r.get("raw_text", ""), r.get("reporter_id", ""),
+                            r.get("article_title", ""), r.get("article_url", "")
+                        ))
+
+                if to_insert:
+                    cursor.executemany("""
+                        INSERT INTO personnel_records (
+                            pub_date, media, dept, domain, rank_title, rank_level, name,
+                            action_type, email, raw_text, reporter_id, article_title, article_url
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, to_insert)
+
+                if seed_reporters:
+                    rep_rows = []
+                    for rep in seed_reporters:
+                        rep_rows.append((
+                            rep.get("reporter_id"), rep.get("name"), rep.get("email", ""),
+                            rep.get("current_media", ""), rep.get("current_dept", ""),
+                            rep.get("current_rank", ""), rep.get("first_seen", ""),
+                            rep.get("last_seen", ""), rep.get("display_label", "")
+                        ))
+                    cursor.executemany("""
+                        INSERT INTO reporters (
+                            reporter_id, name, email, current_media, current_dept,
+                            current_rank, first_seen, last_seen, display_label
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(reporter_id) DO UPDATE SET
+                            current_media = excluded.current_media,
+                            current_dept = excluded.current_dept,
+                            current_rank = excluded.current_rank,
+                            first_seen = MIN(reporters.first_seen, excluded.first_seen),
+                            last_seen = MAX(reporters.last_seen, excluded.last_seen)
+                    """, rep_rows)
+
+                if seed_changes:
+                    cursor.execute("SELECT reporter_id, from_media, to_media, to_date FROM job_changes")
+                    existing_jc = set(cursor.fetchall())
+                    jc_rows = []
+                    for jc in seed_changes:
+                        k_jc = (jc.get("reporter_id"), jc.get("from_media"), jc.get("to_media"), jc.get("to_date"))
+                        if k_jc not in existing_jc:
+                            existing_jc.add(k_jc)
+                            jc_rows.append((
+                                jc.get("reporter_id"), jc.get("name"), jc.get("from_media"),
+                                jc.get("from_dept"), jc.get("from_rank"), jc.get("from_date"),
+                                jc.get("to_media"), jc.get("to_dept"), jc.get("to_rank"),
+                                jc.get("to_date"), jc.get("days_gap", 0), jc.get("confidence_score", 1.0),
+                                jc.get("detected_reason", "")
+                            ))
+                    if jc_rows:
+                        cursor.executemany("""
+                            INSERT INTO job_changes (
+                                reporter_id, name, from_media, from_dept, from_rank, from_date,
+                                to_media, to_dept, to_rank, to_date, days_gap, confidence_score, detected_reason
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, jc_rows)
+
+                conn.commit()
+
+            self.purge_excluded_department_records()
+            return {"inserted_records": len(to_insert), "status": "synced"}
+        except Exception as e:
+            return {"inserted_records": 0, "status": "error", "message": str(e)}
 
     def clear_all_data(self):
         """데이터베이스의 모든 인사 발령 및 기자 데이터를 완전히 삭제합니다."""

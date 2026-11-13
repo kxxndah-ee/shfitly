@@ -530,6 +530,13 @@ def sync_and_parse_all():
         except Exception as e:
             print(f"media_tracker.db 동기화 오류: {e}")
 
+    try:
+        db_inst = MediaDatabase(TRACKER_DB)
+        dump_cnt = db_inst.dump_seed_data()
+        print(f"data/archive_seed.json.gz 시드 파일 자동 백업 완료: {dump_cnt}건")
+    except Exception as e:
+        print(f"시드 파일 백업 실패: {e}")
+
 
 def main():
     print("=" * 65)
