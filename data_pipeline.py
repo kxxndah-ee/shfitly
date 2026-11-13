@@ -2358,7 +2358,7 @@ class OnlineNewsTracker:
         client_id: str = "",
         client_secret: str = "",
         stop_event: Optional[Any] = None,
-        full_history: bool = False
+        full_history: bool = True
     ) -> Dict[str, Any]:
         """
         특정 기자의 최신(당일/당해) 온라인 인사 발령 기사를 실시간 고속 수집하여
@@ -2572,7 +2572,7 @@ class OnlineNewsTracker:
         client_id: str = "",
         client_secret: str = "",
         stop_event: Optional[Any] = None,
-        full_history: bool = False
+        full_history: bool = True
     ) -> Dict[str, Any]:
         """
         특정 매체명, 부서명, 직급명의 최신(당일/당해) 온라인 [인사]/<인사> 기사를 실시간 고속 검색하여
@@ -2963,7 +2963,7 @@ class OnlineNewsTracker:
         client_id: str = "",
         client_secret: str = "",
         stop_event: Optional[Any] = None,
-        full_history: bool = False
+        full_history: bool = True
     ) -> Dict[str, Any]:
         """
         특정 매체명 및 인물명의 최신(당일/당해) 온라인 [인사]/<인사> 기사를 실시간 검색하여
