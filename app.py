@@ -966,6 +966,14 @@ with tab_search:
             filtered_reporters = all_reporters
             matched_records = []
 
+    def format_dept_journey_str(timeline_list: List[Dict[str, Any]]) -> str:
+        depts = []
+        for item in sorted(timeline_list, key=lambda x: str(x.get("pub_date", ""))):
+            d = item.get("dept", "").strip()
+            if d and d not in ["본사", "미표기", "기자"] and d not in depts:
+                depts.append(d)
+        return " ➔ ".join(depts) if len(depts) > 1 else (depts[0] if depts else "본사")
+
     def render_single_reporter_profile(reporter_obj: Dict[str, Any], timeline: List[Dict[str, Any]], db_inst: Any, key_suffix: str = ""):
         if not reporter_obj or not timeline:
             st.info("해당 언론인의 발령 기록 상세 데이터가 없습니다.")
@@ -1015,6 +1023,7 @@ with tab_search:
         current_dept = reporter_obj.get("current_dept", "")
         current_rank = reporter_obj.get("current_rank", "")
         email = reporter_obj.get("email", "")
+        dept_journey_txt = " ➔ ".join(metrics.get("all_departments", [])) if metrics.get("all_departments") else current_dept
 
         # 2. 프로필 요약 카드
         render_html(f"""
@@ -1030,6 +1039,7 @@ with tab_search:
             <div class="profile-meta">
                 • <b>고유 식별자:</b> <code>{reporter_obj.get('reporter_id', '')}</code><br>
                 • <b>바이라인 이메일:</b> {f'<a href="mailto:{email}">{email}</a>' if email else '<span style="color:#94A3B8;">미등록</span>'}<br>
+                • <b>역대 소속 부서 이력:</b> <b style="color:#1E293B;">{dept_journey_txt}</b><br>
                 • <b>활동 추적 기간:</b> {metrics.get('first_date')} ~ {metrics.get('last_date')} : 총 {metrics.get('total_records', len(timeline))}건 발령 및 활동 수집, 승진 {metrics.get('promotion_count', 0)}회, 이직 {metrics.get('job_change_count', 0)}회<br>
                 • <b>주요 출입처 전문분야:</b> <b style="color:#0F172A;">{metrics.get('primary_domain', '일반')}</b>
             </div>
@@ -1102,6 +1112,32 @@ with tab_search:
                 확인된 매체 간 이직 이력이 없습니다. (단일 언론사 재직)
             </div>
             """)
+
+        # 4-1. 소속 부서 순환 로드맵 (타부서 발령 및 순환 보직)
+        dept_journey = metrics.get("department_journey", [])
+        if len(dept_journey) > 1:
+            render_html('<div class="topic-section-divider"></div>')
+            render_html("""
+            <div class="topic-section-header">
+                <div class="topic-title-wrapper">
+                    <span class="topic-accent-bar" style="background-color: #0284C7;"></span>
+                    <span class="topic-section-title">부서 순환</span>
+                    <span class="badge badge-transfer" style="font-size: 0.8rem; font-weight: 700; margin-left: 6px;">소속 부서 이동 로드맵</span>
+                </div>
+            </div>
+            """)
+            dj_html = '<div class="roadmap-container">'
+            for idx, dj in enumerate(dept_journey):
+                dj_html += f"""
+                <div class="roadmap-node" style="border-left-color: #0284C7;">
+                    <div class="roadmap-media" style="color: #0369A1;">{dj['dept']}</div>
+                    <div class="roadmap-period">{dj['start_year']}년 ~ {dj['end_year']}년 : {dj['media']} {dj['last_rank']}</div>
+                </div>
+                """
+                if idx < len(dept_journey) - 1:
+                    dj_html += '<div class="roadmap-arrow" style="color: #0284C7;">➔</div>'
+            dj_html += '</div>'
+            render_html(dj_html)
 
         # 5. 직급 성장 (승진) & 출입처 도메인 분석
         render_html('<div class="topic-section-divider"></div>')
@@ -1270,8 +1306,9 @@ with tab_search:
                 df_all_matched = pd.DataFrame([{
                     "성명": r.get("name", ""),
                     "현재/최근 소속": normalize_media_name(r.get("current_media", "")),
-                    "부서": r.get("current_dept", ""),
+                    "현재 부서": r.get("current_dept", ""),
                     "직급": r.get("current_rank", ""),
+                    "역대 소속 부서 (타부서 이력)": format_dept_journey_str(reporter_timelines.get(r.get("reporter_id"), [])),
                     "활동 추적 기간": f"{str(r.get('first_seen', ''))[:7]} ~ {str(r.get('last_seen', ''))[:7]}" if r.get('first_seen') else "",
                     "발령 기록": f"{len(reporter_timelines.get(r.get('reporter_id'), []))}건",
                     "식별자": r.get("reporter_id", "")
@@ -1285,7 +1322,9 @@ with tab_search:
                     dept = r.get('current_dept', '') or '부서 미표기'
                     rnk = r.get('current_rank', '') or ''
                     cnt = len(reporter_timelines.get(r['reporter_id'], []))
-                    rep_choice_labels.append(f"{r['name']} ({med} · {dept} {rnk} · 발령 {cnt}건)".strip())
+                    all_d = format_dept_journey_str(reporter_timelines.get(r['reporter_id'], []))
+                    dept_lbl = f"{all_d}" if " ➔ " in all_d else dept
+                    rep_choice_labels.append(f"{r['name']} ({med} · {dept_lbl} {rnk} · 발령 {cnt}건)".strip())
 
                 all_choice_label = f"전체 동명이인 함께 보기 (통합 {len(matched_reporters)}명)"
                 all_options = rep_choice_labels + [all_choice_label]
@@ -1503,8 +1542,9 @@ with tab_search:
                     df_other = pd.DataFrame([{
                         "성명": r.get("name", ""),
                         "소속 언론사": normalize_media_name(r.get("current_media", "")),
-                        "부서": r.get("current_dept", ""),
+                        "현재 부서": r.get("current_dept", ""),
                         "직급": r.get("current_rank", ""),
+                        "역대 소속 부서 (타부서 이력)": format_dept_journey_str(other_timelines.get(r.get("reporter_id"), [])),
                         "활동 추적 기간": f"{str(r.get('first_seen', ''))[:7]} ~ {str(r.get('last_seen', ''))[:7]}" if r.get('first_seen') else "",
                         "발령 기록": f"{len(other_timelines.get(r.get('reporter_id'), []))}건"
                     } for r in other_reps])
@@ -1685,8 +1725,9 @@ with tab_search:
                 df_dept_reps = pd.DataFrame([{
                     "성명": r.get("name", ""),
                     "소속 언론사": normalize_media_name(r.get("current_media", "")),
-                    "부서": r.get("current_dept", ""),
+                    "현재 부서": r.get("current_dept", ""),
                     "직급": r.get("current_rank", ""),
+                    "역대 소속 부서 (타부서 이력)": format_dept_journey_str(dept_timelines.get(r.get("reporter_id"), [])),
                     "활동 추적 기간": f"{str(r.get('first_seen', ''))[:7]} ~ {str(r.get('last_seen', ''))[:7]}" if r.get('first_seen') else "",
                     "발령 기록": f"{len(dept_timelines.get(r.get('reporter_id'), []))}건"
                 } for r in filtered_reporters])
@@ -1694,7 +1735,11 @@ with tab_search:
 
                 if len(filtered_reporters) > 1:
                     if len(filtered_reporters) <= 10:
-                        rep_tab_labels = [f"{r['name']} ({r.get('current_rank', '') or r.get('current_dept', '')})" for r in filtered_reporters]
+                        rep_tab_labels = []
+                        for r in filtered_reporters:
+                            all_d = format_dept_journey_str(dept_timelines.get(r['reporter_id'], []))
+                            d_lbl = all_d if " ➔ " in all_d else (r.get('current_dept', '') or '부서 미표기')
+                            rep_tab_labels.append(f"{r['name']} ({d_lbl} {r.get('current_rank', '') or ''})".strip())
                         rep_tabs = st.tabs(rep_tab_labels)
                         for idx, r_item in enumerate(filtered_reporters):
                             with rep_tabs[idx]:
@@ -1709,7 +1754,9 @@ with tab_search:
                             if r_val.strip() == "기자" and not any(m in rnk for m in ["부장", "차장", "국장", "부국장", "팀장", "실장", "본부장", "대표", "사장", "주필", "논설", "위원", "에디터", "데스크"]):
                                 rnk = "기자"
                             cnt = len(dept_timelines.get(r['reporter_id'], []))
-                            lbl = f"{r['name']} ({med} · {dep} {rnk} · 발령 {cnt}건)".strip()
+                            all_d = format_dept_journey_str(dept_timelines.get(r['reporter_id'], []))
+                            dep_str = f"{all_d}" if " ➔ " in all_d else dep
+                            lbl = f"{r['name']} ({med} · {dep_str} {rnk} · 발령 {cnt}건)".strip()
                             options_dict[lbl] = r["reporter_id"]
 
                         selected_label = st.selectbox(

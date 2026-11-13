@@ -56,18 +56,28 @@ RANK_HIERARCHY: Dict[str, int] = {
     "본부장": 8,
     "본부장대우": 8,
     "부문장": 8,
+    "단장": 8,
+    "단장대우": 8,
+    "센터장": 8,
+    "총괄": 8,
     "부국장": 7,
     "부국장급": 7,
     "부국장직대": 7,
     "부국장대우": 7,
+    "실장": 7,
     "실장대우": 7,
+    "부단장": 7,
+    "디렉터": 7,
     "에디터": 7,
     "논설위원": 7,
     "해설위원": 7,
     "전문위원": 7,
+    "기획위원": 7,
     "부장": 6,
     "부장급": 6,
     "부장직대": 6,
+    "부디렉터": 6,
+    "수석": 6,
     "팀장(부장급)": 6,
     "데스크": 6,
     "지국장": 6,
@@ -80,6 +90,7 @@ RANK_HIERARCHY: Dict[str, int] = {
     "팀장급": 4,
     "팀장대우": 4,
     "팀장직대": 4,
+    "파트장": 4,
     "차장대우": 3,
     "선임기자": 3,
     "수석기자": 3,
@@ -516,8 +527,8 @@ class PersonnelRegexParser:
     (언론사, 부서, 직급, 이름, 이메일, 발령구분)을 고속 추출하는 정규표현식 엔진.
     """
 
-    # 구분 기호 및 불릿 문자 (각종 한글 특수문자, 가운뎃점, 아라에아(ㆍ), 네모, 세모, 다이아몬드 등 완벽 대응)
-    BULLET_CHARS = r"(?:^|\s)[·ㆍ]\s*|[△▲▷▶○●■□◆◇◈▣◎⊙◐◑\-\*―━]"
+    # 구분 기호 및 불릿 문자 (각종 한글 특수문자, 가운뎃점, 아라에아(ㆍ), 그리스 델타(Δ/δ), 네모, 세모, 다이아몬드 등 완벽 대응)
+    BULLET_CHARS = r"(?:^|\s)[·ㆍ]\s*|[△▲▷▶▼▽○●■□◆◇◈▣◎⊙◐◑\-\*―━–—※§☞Δδ]"
     
     # 2~4글자 한글 인명 패턴
     NAME_PATTERN = r"[가-힣]{2,4}"
@@ -638,10 +649,10 @@ class PersonnelRegexParser:
                 elif not is_department_header(cand_media):
                     current_media = cand_media
             else:
-                clean_sec_hdr = re.sub(r"^[◇◆■▲△▼▷▶<\[\(【\s]+|[>\]\)】\s]+$", "", line).strip()
+                clean_sec_hdr = re.sub(r"^[◇◆■□▲△▼▽▷▶<\[\(【Δδ\s]+|[>\]\)】\s]+$", "", line).strip()
                 clean_sec_hdr = re.sub(r"\([^\)]*\)", "", clean_sec_hdr).strip()
                 clean_sec_hdr = re.split(r"[\]\)>】〉»<\[\(【〈«]", clean_sec_hdr)[0].strip()
-                is_action_or_rank = any(act in clean_sec_hdr for act in cls.ACTION_CANDIDATES) or any(rnk in clean_sec_hdr for rnk in ["부장", "차장", "국장", "부국장", "본부장", "팀장", "실장", "직대", "대우", "기자", "논설", "주필", "위원"])
+                is_action_or_rank = any(act in clean_sec_hdr for act in cls.ACTION_CANDIDATES) or any(rnk in clean_sec_hdr for rnk in ["부장", "차장", "국장", "부국장", "본부장", "팀장", "실장", "직대", "대우", "기자", "논설", "주필", "위원", "단장", "디렉터", "총괄"])
                 if not is_action_or_rank and len(clean_sec_hdr) <= 15 and not any(cls.clean_name(t) for t in line.split()):
                     if is_department_header(clean_sec_hdr):
                         pass
@@ -651,7 +662,7 @@ class PersonnelRegexParser:
                         current_media = clean_sec_hdr
 
             # 2. 발령 액션 및 섹션 직급 헤더 감지 (예: ◇부장대우 승진, ◇차장 승진, <승진>, <보임>, <임용>, ◇전보 등)
-            clean_hdr = re.sub(r"^[◇◆■▲△▼▷▶<\[\(【\s]+", "", line).strip()
+            clean_hdr = re.sub(r"^[◇◆■□▲△▼▽▷▶<\[\(【Δδ\s]+", "", line).strip()
             action_found = False
             for act_cand in cls.ACTION_CANDIDATES:
                 if act_cand in clean_hdr:
@@ -669,18 +680,18 @@ class PersonnelRegexParser:
                 current_section_rank = ""
 
             # 4. 불릿 기호 기준으로 개별 발령 항목 쪼개기
-            # 예: △건설부동산부장 김희준 △정치부 차장 박철수
+            # 예: △건설부동산부장 김희준 △정치부 차장 박철수, Δ정치부장 박태정 Δ바이오부장 진성훈
             items = re.split(cls.BULLET_CHARS, line)
             for item in items:
                 item = item.strip()
                 if not item or len(item) < 2:
                     continue
 
-                # 4-1. 항목 단위 언론사/기관 헤더 변경 감지 (한 줄에 여러 언론사가 연달아 나오는 경우, 예: ■매경미디어그룹 ◇매일경제신문 △... ◇MBN △...)
-                cand_media_clean = re.sub(r"^[<\[\(【\s]+|[>\]\)】\s]+$", "", item).strip()
+                # 4-1. 항목 단위 언론사/기관 헤더 변경 감지 (한 줄에 여러 언론사가 연달아 나오는 경우)
+                cand_media_clean = re.sub(r"^[<\[\(【Δδ\s]+|[>\]\)】\s]+$", "", item).strip()
                 cand_media_clean = re.sub(r"\([^\)]*\)", "", cand_media_clean).strip()
                 cand_media_clean = re.split(r"[\]\)>】〉»<\[\(【〈«]", cand_media_clean)[0].strip()
-                is_item_action_or_rank = any(act in cand_media_clean for act in cls.ACTION_CANDIDATES) or any(rnk in cand_media_clean for rnk in ["부장", "차장", "국장", "부국장", "본부장", "팀장", "실장", "직대", "대우", "기자", "논설", "주필", "위원"])
+                is_item_action_or_rank = any(act in cand_media_clean for act in cls.ACTION_CANDIDATES) or any(rnk in cand_media_clean for rnk in ["부장", "차장", "국장", "부국장", "본부장", "팀장", "실장", "직대", "대우", "기자", "논설", "주필", "위원", "단장", "디렉터", "총괄"])
                 if not is_item_action_or_rank and len(cand_media_clean) <= 15 and not any(cls.clean_name(t) for t in item.split()):
                     if is_department_header(cand_media_clean):
                         continue
@@ -692,7 +703,7 @@ class PersonnelRegexParser:
                         continue
 
                 # 4-2. 항목 단위 발령 액션 및 섹션 직급 헤더 감지 (예: <부장대우 승진>, <승진>, <보임>, <임용>, <전보> 등)
-                clean_item_hdr = re.sub(r"^[<\[\(【\s]+|[>\]\)】\s]+$", "", item).strip()
+                clean_item_hdr = re.sub(r"^[<\[\(【Δδ\s]+|[>\]\)】\s]+$", "", item).strip()
                 item_has_header = False
                 item_act_found = False
                 for act_cand in cls.ACTION_CANDIDATES:
@@ -721,6 +732,10 @@ class PersonnelRegexParser:
                     item_clean = re.sub(cls.EMAIL_PATTERN, "", item).replace("()", "").strip()
                 else:
                     item_clean = item
+
+                # 0) 타부서/이전 소속 괄호 정보 추출 (예: 사회부장 홍길동 (전 경제부장), 정치부 차장 김철수(원소속: 사회부))
+                former_match = re.search(r"\((?:전|원소속|구)\s*([가-힣\w\s·-]+?)\)", item_clean)
+                former_dept_raw = former_match.group(1).strip() if former_match else ""
 
                 # 괄호 패턴 정제 (예: 생활경제부장(부국장대우) 오승범 또는 정치부장(홍길동))
                 # 1) 직급/발령 보조 설명 괄호 제거 (예: (부국장대우), (국장급), (승진), (전보), (보임), (임용), (직대), (대우), (겸 ...))
@@ -762,6 +777,33 @@ class PersonnelRegexParser:
                         rec["article_title"] = article_title or ""
                         rec["article_url"] = article_url or ""
                         results.append(rec)
+
+                        # 타부서/이전 소속 정보가 존재할 경우 이전 부서 발령 레코드 자동 파생 등록
+                        if former_dept_raw and rec.get("name"):
+                            f_rank = ""
+                            f_dept = former_dept_raw
+                            for r_cand in SORTED_RANKS:
+                                if f_dept.endswith(r_cand):
+                                    f_rank = r_cand
+                                    f_dept = f_dept[:-len(r_cand)].strip()
+                                    break
+                            if not f_dept:
+                                f_dept = "본사"
+                            if not f_rank:
+                                f_rank = rec.get("rank_title", "기자")
+                            
+                            results.append({
+                                "name": rec["name"],
+                                "media": rec["media"],
+                                "dept": f_dept,
+                                "rank_title": f_rank,
+                                "domain": classify_domain(f_dept),
+                                "pub_date": pub_date or str(datetime.date.today()),
+                                "action_type": f"전보 (이전 소속: {f_dept})",
+                                "article_title": article_title or "",
+                                "article_url": article_url or "",
+                                "raw_text": f"(이전 소속) {former_dept_raw} {rec['name']}"
+                            })
 
         return results
 
@@ -1156,15 +1198,30 @@ class PersonnelTrackerEngine:
             # CASE A: 동일 언론사 또는 동일 미디어 그룹 계열사 내의 이동/승진/중복보도
             if rec_media == last_media or is_group_aff:
                 score += 55.0
-                if -1 <= rank_diff <= 2 or is_desk_lateral:
-                    score += 30.0  # 정상 유지 또는 승진 (데스크급 보직 변경 포함)
+
+                # 동일 언론사 내 관리직/데스크 간 순환 보직 (3급 이상: 차장대우~국장급 간 이동)
+                is_senior_lateral = (3 <= rec_level <= 9 and 3 <= last_level <= 9)
+
+                if -1 <= rank_diff <= 3 or is_desk_lateral or is_senior_lateral:
+                    score += 30.0  # 정상 유지 또는 승진 / 데스크 라인 보직 변경
                 elif rank_diff < -1:
-                    score -= 70.0  # 급격한 강등(비정상)
+                    if rec_rank in ["기자", "평기자", "미표기", "수습기자", ""]:
+                        # 발령 기사에서 직급이 생략/미언급된 경우 (예: "△사회부 홍길동"): 강등이 아니라 직급 미표기임
+                        score += 20.0
+                    else:
+                        score -= 20.0
                 elif rank_diff > 3:
-                    score -= 40.0  # 비정상적 고속 승진
+                    if days_diff >= 730:
+                        score += 20.0
+                    else:
+                        score -= 15.0
 
                 domain_sim = calculate_domain_similarity(rec_domain, last_domain)
-                score += domain_sim * 25.0
+                if domain_sim >= 0.5:
+                    score += domain_sim * 25.0
+                else:
+                    # 도메인이 다른 타부서 발령(예: 정치부 -> 사회부/경제부)도 동일 언론사에서는 정상 인사 이동
+                    score += 15.0
 
             # CASE B: 서로 다른 언론사 간의 이동 (이직 탐지 알고리즘)
             else:
@@ -1272,7 +1329,8 @@ class PersonnelTrackerEngine:
             best_cluster["last_seen"] = rec_date
             best_cluster["current_media"] = rec_media
             best_cluster["current_dept"] = rec_dept
-            best_cluster["current_rank"] = rec_rank
+            if rec_rank not in ["기자", "미표기", ""] or not best_cluster.get("current_rank"):
+                best_cluster["current_rank"] = rec_rank
             if not best_cluster.get("email") and rec_email:
                 best_cluster["email"] = rec_email
                 best_cluster["email_prefix"] = rec_email_prefix
@@ -4395,6 +4453,41 @@ def generate_career_profile_metrics(timeline: List[Dict[str, Any]], reporter_obj
     if current_aff:
         affiliation_journey.append(current_aff)
 
+    # 2-1. 소속 부서 순환 로드맵 (Department Rotation Journey - 타부서 발령 이력 추적)
+    department_journey = []
+    current_dept_entry = None
+    for item in sorted_items:
+        dept = item.get("dept", "").strip()
+        if not dept or dept in ["본사", "미표기", "기자"]:
+            continue
+        m = item.get("media", "").strip()
+        y_str = str(item.get("pub_date", ""))[:4]
+        try:
+            y = int(y_str)
+        except Exception:
+            y = first_year
+
+        if not current_dept_entry or current_dept_entry["dept"] != dept or current_dept_entry["media"] != m:
+            if current_dept_entry:
+                department_journey.append(current_dept_entry)
+            current_dept_entry = {
+                "dept": dept,
+                "media": m,
+                "start_year": y,
+                "end_year": y,
+                "last_rank": item.get("rank_title", "기자")
+            }
+        else:
+            current_dept_entry["end_year"] = max(current_dept_entry["end_year"], y)
+            current_dept_entry["last_rank"] = item.get("rank_title", current_dept_entry["last_rank"])
+    if current_dept_entry:
+        department_journey.append(current_dept_entry)
+
+    all_departments = []
+    for dj in department_journey:
+        if dj["dept"] not in all_departments:
+            all_departments.append(dj["dept"])
+
     # 3. 직급 승진 사다리 (Progression Ladder)
     promotion_ladder = []
     seen_ranks = set()
@@ -4442,6 +4535,8 @@ def generate_career_profile_metrics(timeline: List[Dict[str, Any]], reporter_obj
         "job_change_count": job_change_count,
         "promotion_count": promotion_count,
         "affiliation_journey": affiliation_journey,
+        "department_journey": department_journey,
+        "all_departments": all_departments,
         "promotion_ladder": promotion_ladder,
         "domain_breakdown": domain_breakdown,
         "primary_domain": primary_domain
