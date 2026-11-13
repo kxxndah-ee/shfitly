@@ -658,13 +658,12 @@ with tab_search:
                         )
                     with col_btn:
                         search_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
-                    deep_name = st.checkbox("과거 전체 기간(1965~2026) 심층 크롤링", value=st.session_state.get("deep_search_name", True), key="chk_deep_name", help="기본 설정: 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026)의 과거 기사를 전수 심층 크롤링합니다. 체크를 해제하면 당일 및 최신 기사만 빠르게 확인합니다.")
 
                 if search_submitted:
                     name_clean = search_name_input.strip()
                     if name_clean:
                         st.session_state["active_search_name"] = name_clean
-                        st.session_state["deep_search_name"] = deep_name
+                        st.session_state["deep_search_name"] = True
                         # 무조건 실시간 온라인 검색을 디폴트로 실행
                         st.session_state["is_searching_name"] = True
                         st.rerun()
@@ -684,7 +683,7 @@ with tab_search:
                     try:
                         res_box["res"] = OnlineNewsTracker.track_reporter_online(
                             target_name, client_id=nid, client_secret=nsec, stop_event=stop_event,
-                            full_history=st.session_state.get("deep_search_name", True)
+                            full_history=True
                         )
                     except Exception as e:
                         res_box["error"] = str(e)
@@ -737,7 +736,6 @@ with tab_search:
                         rank_input = st.text_input("직급명", value=st.session_state.get("filter_rank_val", ""), key="f_rank")
                     with fcol_btn:
                         filter_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
-                    deep_media = st.checkbox("과거 전체 기간(1965~2026) 심층 크롤링", value=st.session_state.get("deep_search_media", True), key="chk_deep_media", help="기본 설정: 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026)의 과거 기사를 전수 심층 크롤링합니다. 체크를 해제하면 당일 및 최신 기사만 빠르게 확인합니다.")
 
                 if filter_submitted:
                     m_clean = media_input.strip()
@@ -769,7 +767,7 @@ with tab_search:
                     st.session_state["filter_media_val"] = m_clean
                     st.session_state["filter_dept_val"] = d_clean
                     st.session_state["filter_rank_val"] = r_clean
-                    st.session_state["deep_search_media"] = deep_media
+                    st.session_state["deep_search_media"] = True
 
                     if m_clean or d_clean or r_clean:
                         # 무조건 실시간 온라인 검색을 디폴트로 실행
@@ -793,7 +791,7 @@ with tab_search:
                     try:
                         res_box_med["res"] = OnlineNewsTracker.track_media_dept_online(
                             media=m_val, dept=d_val, rank=r_val, client_id=nid, client_secret=nsec,
-                            stop_event=stop_event_med, full_history=st.session_state.get("deep_search_media", True)
+                            stop_event=stop_event_med, full_history=True
                         )
                     except Exception as e:
                         res_box_med["error"] = str(e)
@@ -849,14 +847,13 @@ with tab_search:
                         )
                     with mn_btn:
                         mn_submitted = st.form_submit_button("검색", type="primary", use_container_width=True)
-                    deep_mn = st.checkbox("과거 전체 기간(1965~2026) 심층 크롤링", value=st.session_state.get("deep_search_mn", True), key="chk_deep_mn", help="기본 설정: 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026)의 과거 기사를 전수 심층 크롤링합니다. 체크를 해제하면 당일 및 최신 기사만 빠르게 확인합니다.")
 
                 if mn_submitted:
                     m_clean = mn_media_input.strip()
                     n_clean = mn_name_input.strip()
                     st.session_state["filter_mn_media_val"] = m_clean
                     st.session_state["filter_mn_name_val"] = n_clean
-                    st.session_state["deep_search_mn"] = deep_mn
+                    st.session_state["deep_search_mn"] = True
 
                     if m_clean or n_clean:
                         # 무조건 실시간 온라인 검색을 디폴트로 실행
@@ -879,7 +876,7 @@ with tab_search:
                     try:
                         res_box_mn["res"] = OnlineNewsTracker.track_media_name_online(
                             media=m_val, name=n_val, client_id=nid, client_secret=nsec, stop_event=stop_event_mn,
-                            full_history=st.session_state.get("deep_search_mn", True)
+                            full_history=True
                         )
                     except Exception as e:
                         res_box_mn["error"] = str(e)
