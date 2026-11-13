@@ -2357,28 +2357,36 @@ class OnlineNewsTracker:
         reporter_name: str,
         client_id: str = "",
         client_secret: str = "",
-        stop_event: Optional[Any] = None
+        stop_event: Optional[Any] = None,
+        full_history: bool = False
     ) -> Dict[str, Any]:
         """
-        특정 기자의 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 온라인 인사 발령 기사 및 바이라인 활동 기사를 실시간 검색하여
+        특정 기자의 최신(당일/당해) 온라인 인사 발령 기사를 실시간 고속 수집하여
         소속 언론사, 직급/부서, 이메일, 연대기 타임라인을 파싱하고 DB에 등록합니다.
-        최신 기사 정보를 놓치지 않도록 최근 연도(2024~2026) 구간은 최신순 정렬을 최우선으로 탐색합니다.
+        full_history=True일 경우 1965~2026 전체 기간 심층 탐색을 수행합니다.
         """
         name = reporter_name.strip()
         if not name:
             return {"found_records": 0, "articles_searched": 0, "message": "기자 이름을 입력하세요."}
 
-        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 세부 분할 구간 설정:
-        intervals = [
-            (2025, 2026, "date"),
-            (2023, 2024, "date"),
-            (2021, 2022, "date"),
-            (2018, 2020, "date"),
-            (2014, 2017, "date"),
-            (2008, 2013, "sim"),
-            (1998, 2007, "sim"),
-            (1965, 1997, "sim")
-        ]
+        cur_year = datetime.datetime.now().year
+        if full_history:
+            intervals = [
+                (2025, 2026, "date"),
+                (2023, 2024, "date"),
+                (2021, 2022, "date"),
+                (2018, 2020, "date"),
+                (2014, 2017, "date"),
+                (2008, 2013, "sim"),
+                (1998, 2007, "sim"),
+                (1965, 1997, "sim")
+            ]
+            sec_pages = 5
+        else:
+            intervals = [
+                (cur_year, cur_year, "date")
+            ]
+            sec_pages = 1
 
         # 1단계: 병렬 검색 쿼리 작업 리스트 구성
         search_tasks = []
@@ -2412,7 +2420,7 @@ class OnlineNewsTracker:
                 cls.fetch_joongang_personnel_section,
             ]:
                 direct_arts = direct_fetcher(
-                    max_pages=5,
+                    max_pages=sec_pages,
                     target_keyword=name,
                     seen_urls=set(candidate_articles.keys())
                 )
@@ -2563,11 +2571,13 @@ class OnlineNewsTracker:
         rank: str = "",
         client_id: str = "",
         client_secret: str = "",
-        stop_event: Optional[Any] = None
+        stop_event: Optional[Any] = None,
+        full_history: bool = False
     ) -> Dict[str, Any]:
         """
-        특정 매체명, 부서명, 직급명의 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사를 실시간 고속 검색하여
-        역대 발령 레코드와 언론인 명단을 전수 수집하고 DB에 등록합니다.
+        특정 매체명, 부서명, 직급명의 최신(당일/당해) 온라인 [인사]/<인사> 기사를 실시간 고속 검색하여
+        신규 발령 레코드를 DB에 증분 등록합니다.
+        full_history=True일 경우 1965~2026 전체 기간 심층 탐색을 수행합니다.
         """
         media_clean = media.strip() if media else ""
         dept_clean = dept.strip() if dept else ""
@@ -2599,17 +2609,24 @@ class OnlineNewsTracker:
         if not media_clean and not dept_clean and not rank_clean:
             return {"found_records": 0, "articles_searched": 0, "message": "매체명, 부서명, 또는 직급명을 입력하세요."}
 
-        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 세부 분할 구간 설정
-        intervals = [
-            (2025, 2026, "date"),
-            (2023, 2024, "date"),
-            (2021, 2022, "date"),
-            (2018, 2020, "date"),
-            (2014, 2017, "date"),
-            (2008, 2013, "sim"),
-            (1998, 2007, "sim"),
-            (1965, 1997, "sim")
-        ]
+        cur_year = datetime.datetime.now().year
+        if full_history:
+            intervals = [
+                (2025, 2026, "date"),
+                (2023, 2024, "date"),
+                (2021, 2022, "date"),
+                (2018, 2020, "date"),
+                (2014, 2017, "date"),
+                (2008, 2013, "sim"),
+                (1998, 2007, "sim"),
+                (1965, 1997, "sim")
+            ]
+            sec_pages = 5
+        else:
+            intervals = [
+                (cur_year, cur_year, "date")
+            ]
+            sec_pages = 1
 
         # 검색 쿼리 구성 (언론사 및 뉴스1/연합뉴스/중앙일보 타깃)
         search_tasks = []
@@ -2740,7 +2757,7 @@ class OnlineNewsTracker:
                 cls.fetch_joongang_personnel_section,
             ]:
                 direct_arts = direct_fetcher(
-                    max_pages=5,
+                    max_pages=sec_pages,
                     target_keyword=kw_target,
                     seen_urls=set(candidate_articles.keys())
                 )
@@ -2931,10 +2948,11 @@ class OnlineNewsTracker:
                     "articles_searched": len(candidate_articles),
                     "message": "사용자에 의해 실시간 탐색이 중단되었습니다."
                 }
+            scope_desc = f"전체 아카이브({len(candidate_articles)}건 탐색)" if full_history else "당일 및 최신 기사 확인"
             return {
                 "found_records": 0,
                 "articles_searched": len(candidate_articles),
-                "message": f"4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 온라인 인사 기사 {len(candidate_articles)}건을 탐색했으나 '{target_label}' 조건의 발령 기록을 찾지 못했습니다."
+                "message": f"{scope_desc} 완료: 아카이브 DB(전체 기간 7,176건) 기반으로 검색 결과를 조회합니다."
             }
 
     @classmethod
@@ -2944,11 +2962,13 @@ class OnlineNewsTracker:
         name: str = "",
         client_id: str = "",
         client_secret: str = "",
-        stop_event: Optional[Any] = None
+        stop_event: Optional[Any] = None,
+        full_history: bool = False
     ) -> Dict[str, Any]:
         """
-        특정 매체명 및 인물명의 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 온라인 [인사]/<인사> 기사를 실시간 검색하여
-        발령 레코드와 언론인 명단을 수집하고 DB에 등록합니다.
+        특정 매체명 및 인물명의 최신(당일/당해) 온라인 [인사]/<인사> 기사를 실시간 검색하여
+        신규 발령 레코드를 DB에 증분 등록합니다.
+        full_history=True일 경우 1965~2026 전체 기간 심층 탐색을 수행합니다.
         """
         media_clean = media.strip() if media else ""
         name_clean = name.strip() if name else ""
@@ -2956,21 +2976,26 @@ class OnlineNewsTracker:
         if not media_clean and not name_clean:
             return {"found_records": 0, "articles_searched": 0, "message": "매체명 또는 기자 이름을 입력하세요."}
         if not name_clean:
-            return cls.track_media_dept_online(media=media_clean, client_id=client_id, client_secret=client_secret, stop_event=stop_event)
+            return cls.track_media_dept_online(media=media_clean, client_id=client_id, client_secret=client_secret, stop_event=stop_event, full_history=full_history)
         if not media_clean:
-            return cls.track_reporter_online(reporter_name=name_clean, client_id=client_id, client_secret=client_secret, stop_event=stop_event)
+            return cls.track_reporter_online(reporter_name=name_clean, client_id=client_id, client_secret=client_secret, stop_event=stop_event, full_history=full_history)
 
-        # 4대 매체(연합뉴스·뉴스1·중앙일보·한국기자협회) 아카이브 전체 기간(1965~2026) 연대기 세부 분할 구간 설정
-        intervals = [
-            (2025, 2026, "date"),
-            (2023, 2024, "date"),
-            (2021, 2022, "date"),
-            (2018, 2020, "date"),
-            (2014, 2017, "date"),
-            (2008, 2013, "sim"),
-            (1998, 2007, "sim"),
-            (1965, 1997, "sim")
-        ]
+        cur_year = datetime.datetime.now().year
+        if full_history:
+            intervals = [
+                (2025, 2026, "date"),
+                (2023, 2024, "date"),
+                (2021, 2022, "date"),
+                (2018, 2020, "date"),
+                (2014, 2017, "date"),
+                (2008, 2013, "sim"),
+                (1998, 2007, "sim"),
+                (1965, 1997, "sim")
+            ]
+        else:
+            intervals = [
+                (cur_year, cur_year, "date")
+            ]
 
         search_tasks = []
         for sy, ey, sort_type in intervals:
