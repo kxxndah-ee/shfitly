@@ -2038,10 +2038,11 @@ class OnlineNewsTracker:
                     except Exception as e:
                         print(f"[Naver API Search Error] {e}")
 
-            # 1-2. 네이버 PC/모바일 웹 검색 (뉴스1 / 연합뉴스 / 중앙일보 / 기자협회 인링크 다중 페이지 탐색)
-            for start_idx in [1, 16]:
-                if len(articles) >= max_items:
-                    break
+            # 1-2. 네이버 PC/모바일 웹 검색 (API 결과가 부족할 때 1페이지 고속 탐색)
+            if len(articles) < max_items:
+                for start_idx in [1]:
+                    if len(articles) >= max_items:
+                        break
                 try:
                     n_sort = "1" if sort_first == "date" else "0"
                     nso_sort = "so:dd" if n_sort == "1" else "so:r"
@@ -2138,36 +2139,17 @@ class OnlineNewsTracker:
                 except Exception as e:
                     pass
 
-        # 2. 다음 뉴스 검색 (뉴스1, 연합뉴스, 뉴시스, 중앙일보, 한국기자협회 기사 엄격 필터링 및 다중 페이지 수집)
-        daum_queries = list(wire_queries)
-        if target_keyword:
-            tokens = [t for t in target_keyword.split() if t]
-            if len(tokens) > 1:
-                daum_queries = [
-                    f'{target_keyword} [인사]',
-                    f'"{target_keyword}" [인사]',
-                    f'[인사] {target_keyword}',
-                ] + [f'"{tok}" [인사]' for tok in tokens] + daum_queries
-            else:
-                daum_queries = [
-                    f'"{target_keyword}" "[인사]"',
-                    f'"[인사] {target_keyword}"',
-                    f'"[인사]{target_keyword}"',
-                    f'"{target_keyword}" "[인사]" 뉴스1',
-                    f'"{target_keyword}" "[인사]" 연합뉴스',
-                    f'"{target_keyword}" "[인사]" 뉴시스',
-                    f'"{target_keyword}" "[인사]" 중앙일보',
-                    f'"{target_keyword}" "[인사]" 기자협회'
-                ] + daum_queries
+        # 2. 다음 뉴스 검색 (결과가 부족할 때만 핵심 쿼리 1페이지 고속 탐색)
+        if len(articles) < max_items:
+            daum_queries = wire_queries[:2] if wire_queries else [query]
+            period_param = f"&period=u&sd={start_year}0101000000&ed={end_year}1231235959" if (start_year and end_year) else ""
 
-        period_param = f"&period=u&sd={start_year}0101000000&ed={end_year}1231235959" if (start_year and end_year) else ""
-
-        for wq in daum_queries:
-            if len(articles) >= max_items:
-                break
-            for p_num in [1, 2, 3]:
+            for wq in daum_queries:
                 if len(articles) >= max_items:
                     break
+                for p_num in [1]:
+                    if len(articles) >= max_items:
+                        break
                 try:
                     daum_sort = "recency" if sort_first == "date" else "accuracy"
                     page_param = f"&p={p_num}" if p_num > 1 else ""
@@ -2372,62 +2354,44 @@ class OnlineNewsTracker:
         cur_year = datetime.datetime.now().year
         if full_history:
             intervals = [
-                (2025, 2026, "date"),
-                (2023, 2024, "date"),
-                (2021, 2022, "date"),
-                (2018, 2020, "date"),
-                (2014, 2017, "date"),
-                (2008, 2013, "sim"),
-                (1998, 2007, "sim"),
-                (1965, 1997, "sim")
+                (2024, 2026, "date"),
+                (2019, 2023, "date"),
+                (1965, 2018, "sim")
             ]
-            sec_pages = 5
+            sec_pages = 2
         else:
             intervals = [
                 (cur_year, cur_year, "date")
             ]
             sec_pages = 1
 
-        # 1단계: 병렬 검색 쿼리 작업 리스트 구성
+        # 1단계: 병렬 검색 쿼리 작업 리스트 구성 (핵심 쿼리 고속화)
         search_tasks = []
         for sy, ey, sort_type in intervals:
             q_list = [
                 f'"{name}" [인사]',
-                f'[인사] "{name}"',
-                f'{name} [인사] 뉴스1',
                 f'{name} [인사] 연합뉴스',
+                f'{name} [인사] 뉴스1',
                 f'{name} [인사] 중앙일보',
-                f'{name} [인사] 기자협회',
             ]
-            if ey >= 2018:
-                q_list.extend([
-                    f'{name} "부장" [인사]',
-                    f'{name} "차장" [인사]',
-                    f'{name} "팀장" [인사]',
-                    f'{name} "국장" [인사]',
-                    f'{name} "기자" [인사]',
-                ])
             for q in q_list:
                 search_tasks.append((q, sy, ey, sort_type))
 
         candidate_articles: Dict[str, Dict[str, Any]] = {}
 
-        # 4대 매체 전용 섹션(한국기자협회·뉴스1·중앙일보) 직접 보조 탐색
+        # 4대 매체 전용 섹션(한국기자협회·뉴스1·중앙일보) 직접 보조 탐색 (병렬 고속화)
         try:
-            for direct_fetcher in [
-                cls.fetch_journalist_personnel_section,
-                cls.fetch_news1_personnel_section,
-                cls.fetch_joongang_personnel_section,
-            ]:
-                direct_arts = direct_fetcher(
-                    max_pages=sec_pages,
-                    target_keyword=name,
-                    seen_urls=set(candidate_articles.keys())
-                )
-                for d_art in direct_arts:
-                    u = d_art.get("url", "")
-                    if u and u not in candidate_articles:
-                        candidate_articles[u] = d_art
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as direct_exec:
+                fetcher_futures = [
+                    direct_exec.submit(cls.fetch_journalist_personnel_section, sec_pages, name, set()),
+                    direct_exec.submit(cls.fetch_news1_personnel_section, sec_pages, name, set()),
+                    direct_exec.submit(cls.fetch_joongang_personnel_section, sec_pages, name, set()),
+                ]
+                for f in concurrent.futures.as_completed(fetcher_futures):
+                    for d_art in f.result():
+                        u = d_art.get("url", "")
+                        if u and u not in candidate_articles:
+                            candidate_articles[u] = d_art
         except Exception:
             pass
 
@@ -2454,14 +2418,26 @@ class OnlineNewsTracker:
                 except Exception:
                     pass
 
-        # 2단계: 후보 기사 본문 병렬 수집 (ThreadPoolExecutor)
+        # 2단계: 후보 기사 본문 병렬 수집 (이미 DB에 파싱된 URL은 스킵하여 속도 극대화)
         all_records = []
         known_medias = set()
+
+        db_known_urls = set()
+        try:
+            db_inst = MediaDatabase()
+            with db_inst.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT article_url FROM personnel_records WHERE article_url IS NOT NULL AND article_url != ''")
+                db_known_urls = {row[0] for row in cur.fetchall()}
+        except Exception:
+            pass
 
         def fetch_worker(art):
             if stop_event and getattr(stop_event, "is_set", lambda: False)():
                 return None
             u = art["url"]
+            if u in db_known_urls:
+                return None
             try:
                 fetched = cls.fetch_full_text(u)
                 body = fetched.get("text", "")
@@ -2612,112 +2588,64 @@ class OnlineNewsTracker:
         cur_year = datetime.datetime.now().year
         if full_history:
             intervals = [
-                (2025, 2026, "date"),
-                (2023, 2024, "date"),
-                (2021, 2022, "date"),
-                (2018, 2020, "date"),
-                (2014, 2017, "date"),
-                (2008, 2013, "sim"),
-                (1998, 2007, "sim"),
-                (1965, 1997, "sim")
+                (2024, 2026, "date"),
+                (2019, 2023, "date"),
+                (1965, 2018, "sim")
             ]
-            sec_pages = 5
+            sec_pages = 2
         else:
             intervals = [
                 (cur_year, cur_year, "date")
             ]
             sec_pages = 1
 
-        # 검색 쿼리 구성 (언론사 및 뉴스1/연합뉴스/중앙일보 타깃)
+        # 검색 쿼리 구성 (언론사 및 뉴스1/연합뉴스/중앙일보 타깃 - 핵심 쿼리 고속화)
         search_tasks = []
         for sy, ey, sort_type in intervals:
             q_list = []
             if media_clean and rank_clean and dept_clean:
                 q_list.extend([
-                    f'"[인사] {media_clean}"',
-                    f'"[인사]{media_clean}"',
-                    f'"{media_clean}" [인사]',
-                    f'[인사] {media_clean}',
-                    f'[인사] <{media_clean}>',
-                    f'{media_clean} {dept_clean} [인사]',
                     f'{media_clean} "{dept_clean}" [인사]',
-                    f'{media_clean} "{dept_clean}부" [인사]',
                     f'{media_clean} "{rank_clean}" [인사]',
-                ])
-                for w_src in ["뉴스1", "연합뉴스", "중앙일보", "기자협회"]:
-                    if not is_same_media_company(media_clean, w_src):
-                        q_list.append(f'{media_clean} [인사] {w_src}')
-            elif media_clean and rank_clean:
-                q_list.extend([
-                    f'"[인사] {media_clean}"',
-                    f'"[인사]{media_clean}"',
-                    f'"{media_clean}" [인사]',
                     f'[인사] {media_clean}',
-                    f'{media_clean} "{rank_clean}" [인사]',
-                    f'{media_clean} [인사] "{rank_clean}"',
-                    f'[인사] <{media_clean}>',
-                ])
-                for w_src in ["뉴스1", "연합뉴스", "중앙일보"]:
-                    if not is_same_media_company(media_clean, w_src):
-                        q_list.append(f'{media_clean} [인사] {w_src}')
-                if media_clean in MEDIA_GROUP_ALIASES:
-                    for g_alias in MEDIA_GROUP_ALIASES[media_clean]:
-                        q_list.extend([
-                            f'"{g_alias}" [인사]',
-                            f'[인사] {g_alias}',
-                            f'"{g_alias}" [인사] 중앙일보',
-                        ])
-            elif media_clean and dept_clean:
-                q_list.extend([
-                    f'"[인사] {media_clean}"',
-                    f'"[인사]{media_clean}"',
-                    f'"{media_clean}" [인사]',
-                    f'[인사] {media_clean}',
-                    f'[인사] <{media_clean}>',
-                    f'{media_clean} "{dept_clean}" [인사]',
-                    f'{media_clean} {dept_clean} [인사]',
-                ])
-                for w_src in ["뉴스1", "연합뉴스", "중앙일보", "기자협회"]:
-                    if not is_same_media_company(media_clean, w_src):
-                        q_list.append(f'{media_clean} [인사] {w_src}')
-                if media_clean in MEDIA_GROUP_ALIASES:
-                    for g_alias in MEDIA_GROUP_ALIASES[media_clean]:
-                        q_list.extend([
-                            f'"{g_alias}" [인사]',
-                            f'[인사] {g_alias}',
-                            f'"{g_alias}" [인사] 중앙일보',
-                        ])
-            elif media_clean:
-                q_list.extend([
-                    f'{media_clean} [인사]',
-                    f'[인사] {media_clean}',
-                    f'[인사] <{media_clean}>',
-                    f'[인사] ◇ {media_clean}',
                     f'{media_clean} [인사] 뉴스1',
                     f'{media_clean} [인사] 연합뉴스',
+                ])
+            elif media_clean and rank_clean:
+                q_list.extend([
+                    f'{media_clean} "{rank_clean}" [인사]',
+                    f'[인사] {media_clean}',
+                    f'{media_clean} [인사] 뉴스1',
+                    f'{media_clean} [인사] 연합뉴스',
+                ])
+                if media_clean in MEDIA_GROUP_ALIASES:
+                    for g_alias in MEDIA_GROUP_ALIASES[media_clean][:2]:
+                        q_list.append(f'{g_alias} "{rank_clean}" [인사]')
+            elif media_clean and dept_clean:
+                q_list.extend([
+                    f'{media_clean} "{dept_clean}" [인사]',
+                    f'[인사] {media_clean}',
+                    f'{media_clean} [인사] 뉴스1',
+                    f'{media_clean} [인사] 연합뉴스',
+                ])
+                if media_clean in MEDIA_GROUP_ALIASES:
+                    for g_alias in MEDIA_GROUP_ALIASES[media_clean][:2]:
+                        q_list.append(f'{g_alias} "{dept_clean}" [인사]')
+            elif media_clean:
+                q_list.extend([
+                    f'[인사] {media_clean}',
+                    f'{media_clean} [인사] 연합뉴스',
+                    f'{media_clean} [인사] 뉴스1',
                     f'{media_clean} [인사] 중앙일보',
                 ])
                 if media_clean in MEDIA_GROUP_ALIASES:
-                    for g_alias in MEDIA_GROUP_ALIASES[media_clean]:
-                        q_list.extend([
-                            f'"{g_alias}" [인사]',
-                            f'[인사] {g_alias}',
-                            f'[인사] "{g_alias}"',
-                            f'"{g_alias}" [인사] 뉴스1',
-                            f'"{g_alias}" [인사] 연합뉴스',
-                            f'"{g_alias}" [인사] 중앙일보',
-                        ])
+                    for g_alias in MEDIA_GROUP_ALIASES[media_clean][:2]:
+                        q_list.append(f'[인사] {g_alias}')
             elif rank_clean and dept_clean:
                 q_list.extend([
                     f'"{dept_clean}" "{rank_clean}" [인사] 뉴스1',
                     f'"{dept_clean}" "{rank_clean}" [인사] 연합뉴스',
-                    f'"{dept_clean}" "{rank_clean}" [인사] 중앙일보',
-                    f'{dept_clean} [인사] 뉴스1',
-                    f'{dept_clean} [인사] 연합뉴스',
                     f'{dept_clean} [인사] 중앙일보',
-                    f'"{rank_clean}" [인사] 뉴스1',
-                    f'"{rank_clean}" [인사] 연합뉴스',
-                    f'"{rank_clean}" [인사] 중앙일보',
                 ])
             elif rank_clean:
                 # 오직 직급(부장, 차장 등)만 검색한 경우 언론사 및 뉴스1/연합뉴스/중앙일보 타깃
@@ -2725,21 +2653,13 @@ class OnlineNewsTracker:
                     f'"{rank_clean}" [인사] 뉴스1',
                     f'"{rank_clean}" [인사] 연합뉴스',
                     f'"{rank_clean}" [인사] 중앙일보',
-                    f'[인사] <뉴스1> "{rank_clean}"',
-                    f'[인사] <연합뉴스> "{rank_clean}"',
-                    f'[인사] <중앙일보> "{rank_clean}"',
                     f'신문사 "{rank_clean}" [인사]',
-                    f'방송사 "{rank_clean}" [인사]',
-                    f'일보 "{rank_clean}" [인사]',
-                    f'경제 "{rank_clean}" [인사]',
                 ])
             elif dept_clean:
                 q_list.extend([
                     f'"{dept_clean}" [인사] 뉴스1',
                     f'"{dept_clean}" [인사] 연합뉴스',
                     f'"{dept_clean}" [인사] 중앙일보',
-                    f'신문사 "{dept_clean}" [인사]',
-                    f'방송사 "{dept_clean}" [인사]',
                 ])
 
             for q in q_list:
@@ -2747,24 +2667,21 @@ class OnlineNewsTracker:
 
         candidate_articles: Dict[str, Dict[str, Any]] = {}
 
-        # 4대 매체 전용 섹션(연합뉴스·한국기자협회·뉴스1·중앙일보) 직접 보조 탐색
+        # 4대 매체 전용 섹션(연합뉴스·한국기자협회·뉴스1·중앙일보) 직접 보조 탐색 (병렬 고속화)
         try:
             kw_target = media_clean or dept_clean or rank_clean
-            for direct_fetcher in [
-                cls.fetch_yonhap_personnel_section,
-                cls.fetch_journalist_personnel_section,
-                cls.fetch_news1_personnel_section,
-                cls.fetch_joongang_personnel_section,
-            ]:
-                direct_arts = direct_fetcher(
-                    max_pages=sec_pages,
-                    target_keyword=kw_target,
-                    seen_urls=set(candidate_articles.keys())
-                )
-                for d_art in direct_arts:
-                    u = d_art.get("url", "")
-                    if u and u not in candidate_articles:
-                        candidate_articles[u] = d_art
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as direct_exec:
+                fetcher_futures = [
+                    direct_exec.submit(cls.fetch_yonhap_personnel_section, sec_pages, kw_target, set()),
+                    direct_exec.submit(cls.fetch_journalist_personnel_section, sec_pages, kw_target, set()),
+                    direct_exec.submit(cls.fetch_news1_personnel_section, sec_pages, kw_target, set()),
+                    direct_exec.submit(cls.fetch_joongang_personnel_section, sec_pages, kw_target, set()),
+                ]
+                for f in concurrent.futures.as_completed(fetcher_futures):
+                    for d_art in f.result():
+                        u = d_art.get("url", "")
+                        if u and u not in candidate_articles:
+                            candidate_articles[u] = d_art
         except Exception:
             pass
 
@@ -2790,10 +2707,22 @@ class OnlineNewsTracker:
                 except Exception:
                     pass
 
+        db_known_urls = set()
+        try:
+            db_inst = MediaDatabase()
+            with db_inst.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT article_url FROM personnel_records WHERE article_url IS NOT NULL AND article_url != ''")
+                db_known_urls = {row[0] for row in cur.fetchall()}
+        except Exception:
+            pass
+
         def fetch_worker(art):
             if stop_event and getattr(stop_event, "is_set", lambda: False)():
                 return None
             u = art["url"]
+            if u in db_known_urls:
+                return None
             try:
                 fetched = cls.fetch_full_text(u)
                 body = fetched.get("text", "")
@@ -2983,39 +2912,25 @@ class OnlineNewsTracker:
         cur_year = datetime.datetime.now().year
         if full_history:
             intervals = [
-                (2025, 2026, "date"),
-                (2023, 2024, "date"),
-                (2021, 2022, "date"),
-                (2018, 2020, "date"),
-                (2014, 2017, "date"),
-                (2008, 2013, "sim"),
-                (1998, 2007, "sim"),
-                (1965, 1997, "sim")
+                (2024, 2026, "date"),
+                (2019, 2023, "date"),
+                (1965, 2018, "sim")
             ]
+            sec_pages = 2
         else:
             intervals = [
                 (cur_year, cur_year, "date")
             ]
+            sec_pages = 1
 
         search_tasks = []
         for sy, ey, sort_type in intervals:
             q_list = [
-                f'"{name_clean}" [인사] {media_clean}',
                 f'{media_clean} "{name_clean}" [인사]',
-                f'"{media_clean}" "{name_clean}" [인사]',
-                f'[인사] <{media_clean}> "{name_clean}"',
+                f'"{name_clean}" [인사] {media_clean}',
                 f'"{name_clean}" [인사] 뉴스1',
                 f'"{name_clean}" [인사] 연합뉴스',
-                f'"{name_clean}" [인사] 중앙일보',
-                f'"{name_clean}" [인사] 기자협회',
             ]
-            if ey >= 2018:
-                q_list.extend([
-                    f'{media_clean} "{name_clean}" "부장" [인사]',
-                    f'{media_clean} "{name_clean}" "차장" [인사]',
-                    f'{media_clean} "{name_clean}" "팀장" [인사]',
-                    f'{media_clean} "{name_clean}" "국장" [인사]',
-                ])
             for q in q_list:
                 search_tasks.append((q, sy, ey, sort_type))
 
@@ -3025,7 +2940,7 @@ class OnlineNewsTracker:
         try:
             kw_target = name_clean or media_clean
             ja_direct = cls.fetch_joongang_personnel_section(
-                max_pages=5,
+                max_pages=sec_pages,
                 target_keyword=kw_target
             )
             for j_art in ja_direct:
@@ -3060,10 +2975,22 @@ class OnlineNewsTracker:
         all_records = []
         known_medias = set()
 
+        db_known_urls = set()
+        try:
+            db_inst = MediaDatabase()
+            with db_inst.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT article_url FROM personnel_records WHERE article_url IS NOT NULL AND article_url != ''")
+                db_known_urls = {row[0] for row in cur.fetchall()}
+        except Exception:
+            pass
+
         def fetch_worker(art):
             if stop_event and getattr(stop_event, "is_set", lambda: False)():
                 return None
             u = art["url"]
+            if u in db_known_urls:
+                return None
             try:
                 fetched = cls.fetch_full_text(u)
                 body = fetched.get("text", "")
